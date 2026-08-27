@@ -3193,6 +3193,95 @@ def chart_marketcap(t: pd.DataFrame, outdir: Path) -> Path:
     return _save(fig, "03c_marketcap", outdir)
 
 
+def spread_lens(mkt: pd.DataFrame, min_orders=50):
+    """How much of the result is explained by the spread that was available?
+
+    A passive / midpoint-seeking approach earns the spread. Where the spread is
+    wide there is a lot to earn; where it is tight there is nothing, and impact
+    and timing show through instead. Fitting result against spread says whether
+    that is what is happening, and names the markets that miss the line.
+
+    Returns None when there are too few markets to fit anything meaningful.
+    """
+    if mkt is None or mkt.empty or "spread_bps" not in mkt:
+        return None
+    t = mkt[(mkt["n"] >= min_orders) & mkt["spread_bps"].notna()
+            & mkt["bps"].notna()].copy()
+    if len(t) < 5:
+        return None
+    x, y = t["spread_bps"].values, t["bps"].values
+    if np.ptp(x) < 1e-9:
+        return None
+    r = float(np.corrcoef(x, y)[0, 1])
+    slope, intercept = np.polyfit(x, y, 1)
+    t["predicted"] = slope * t["spread_bps"] + intercept
+    t["vs_fit"] = t["bps"] - t["predicted"]
+    breakeven = float(-intercept / slope) if slope else np.nan
+    tight = t[t["spread_bps"] < breakeven] if np.isfinite(breakeven) else t.iloc[0:0]
+    return {
+        "table": t.sort_values("spread_bps"),
+        "r": r, "slope": float(slope), "intercept": float(intercept),
+        "breakeven": breakeven,
+        "tight_share": float(tight["weight_pct"].sum()),
+        "tight_names": list(tight.index),
+        "tight_bps": (float(np.average(tight["bps"], weights=tight["weight_pct"]))
+                      if len(tight) and tight["weight_pct"].sum() else np.nan),
+        "underperformer": t["vs_fit"].idxmin() if len(t) else None,
+    }
+
+
+def chart_spread_lens(lens: dict, outdir: Path) -> Path:
+    """Result against the spread that was available, market by market."""
+    if not lens:
+        return None
+    t = lens["table"]
+    fig, ax = plt.subplots(figsize=(10.0, 5.4))
+
+    xs = np.linspace(0, float(t["spread_bps"].max()) * 1.12, 50)
+    ax.plot(xs, lens["slope"] * xs + lens["intercept"], color=BASELINE,
+            lw=1.4, zorder=2)
+    ax.axhline(0, color=BASELINE, lw=1.1, zorder=2)
+    if np.isfinite(lens["breakeven"]):
+        ax.axvline(lens["breakeven"], color=INK_MUTED, lw=1.0, ls=":", zorder=2)
+        ax.text(lens["breakeven"], ax.get_ylim()[1],
+                f"  break-even ≈ {lens['breakeven']:.1f} bps of spread",
+                fontsize=9, color=INK_MUTED, va="top")
+
+    sizes = 120 + 1400 * (t["weight_pct"] / max(t["weight_pct"].max(), 1e-9))
+    ax.scatter(t["spread_bps"], t["bps"], s=sizes,
+               color=[SAVE_COLOR if v >= 0 else COST_COLOR for v in t["bps"]],
+               alpha=0.85, edgecolor=SURFACE, linewidth=1.6, zorder=3)
+    # the tight-spread markets cluster, so stagger their labels instead of
+    # stacking them on top of one another
+    xr = max(float(t["spread_bps"].max() - t["spread_bps"].min()), 1e-9)
+    yr = max(float(t["bps"].max() - t["bps"].min()), 1e-9)
+    placed = []
+    for name, r in t.iterrows():
+        x, y = float(r["spread_bps"]), float(r["bps"])
+        offs = [(0, 17), (0, -22), (0, 30), (0, -34), (0, 43)]
+        pick = offs[0]
+        for cand in offs:
+            clash = any(abs(x - px) / xr < 0.09
+                        and abs((y + cand[1] * yr / 380) - py) / yr < 0.07
+                        for px, py in placed)
+            if not clash:
+                pick = cand
+                break
+        placed.append((x, y + pick[1] * yr / 380))
+        ax.annotate(str(name), (x, y), textcoords="offset points",
+                    xytext=pick, ha="center", fontsize=9.5, color=INK)
+    _finish(ax, "Result against the spread that was available",
+            xlabel="average spread in that market (bps)",
+            ylabel="bps vs benchmark (positive = saving)", axis="y")
+    ax.text(1.0, -0.15,
+            f"Each bubble is a market, sized by share of value.  "
+            f"correlation r = {lens['r']:+.2f}",
+            transform=ax.transAxes, fontsize=9, color=INK_MUTED,
+            ha="right", va="top")
+    return _save(fig, "05_spread_lens", outdir)
+
+
+
 def analyse_report_only() -> dict:
     """Everything the simple deck needs, from the report tables alone."""
     log("")
@@ -3227,6 +3316,12 @@ def analyse_report_only() -> dict:
         "industry": INDUSTRY_REPORT,
         "dark_markets": list(DARK_MARKETS or []),
     }
+    ctx["spread_lens"] = spread_lens(ctx["market_table"])
+    if ctx["spread_lens"]:
+        L = ctx["spread_lens"]
+        log(f"  spread lens: r = {L['r']:+.2f}, break-even "
+            f"{L['breakeven']:.1f} bps of spread, "
+            f"{L['tight_share']:.0f}% of value below it")
     log(f"  {hl['orders']:,} orders · {f_money(hl['notional'], 1)} · "
         f"{f_bps(hl['bps'])} bps · {hl['markets']} markets")
     return ctx
@@ -3255,6 +3350,14 @@ def make_simple_charts(ctx: dict, outdir: Path) -> dict:
     if not ctx["cap_table"].empty:
         c["cap"] = chart_marketcap(ctx["cap_table"], outdir)
     c["venue"] = chart_venue(outdir)
+    # only worth an exhibit where the relationship actually holds; on a book
+    # where it does not, the chart would invite a story the data will not carry
+    L = ctx.get("spread_lens")
+    if L and abs(L["r"]) >= 0.6:
+        c["spread"] = chart_spread_lens(L, outdir)
+    elif L:
+        log(f"  spread lens r = {L['r']:+.2f} - too weak to show, skipping "
+            "that exhibit")
     ctx["charts"] = c
     return c
 
@@ -3325,11 +3428,41 @@ def build_simple_narrative(ctx: dict) -> dict:
             n["findings"].append(
                 f"**{worst2}** are where you lose: {bad.index[0]} runs "
                 f"{f_bps(r['bps'])} bps on {r['weight_pct']:.0f}% of value.")
-            prize = abs(r["bps"]) * r["notional_m"] * 1e6 / 1e4
+
+    # --- what the spread explains, and therefore what to actually do --------
+    L = ctx.get("spread_lens")
+    if L and abs(L["r"]) >= 0.6:
+        n["findings"].append(
+            f"**Your result tracks the spread that was there to capture** "
+            f"(correlation {L['r']:+.2f}). You earn where spreads are wide and "
+            f"lose where they are tight — break-even sits at about "
+            f"**{L['breakeven']:.1f} bps** of spread.")
+        if L["tight_names"] and np.isfinite(L["tight_bps"]):
+            nm = ", ".join(L["tight_names"])
+            n["findings"].append(
+                f"**{nm} are below that line** — {L['tight_share']:.0f}% of "
+                f"everything you trade, together {f_bps(L['tight_bps'])} bps. "
+                "There is no spread to capture there, so the approach that "
+                "works elsewhere has nothing to work with.")
             n["recs"].append(
-                f"**Start with {bad.index[0]}.** Bringing it back to flat is "
-                f"worth about {f_money(prize)}. It is the single clearest "
-                "place to look.")
+                f"**Trade the tight-spread markets differently.** In {nm} the "
+                f"spread is under {L['breakeven']:.0f} bps, so nothing is "
+                "earned by waiting at the touch. Lower the participation rate, "
+                "give the orders more of the day, and avoid crossing — the aim "
+                "there is to leak less, not to capture more.")
+        # the market that misses the pattern is the real place to look
+        u = L["underperformer"]
+        if u is not None:
+            row = L["table"].loc[u]
+            if row["vs_fit"] < -3:
+                gap_ccy = abs(row["vs_fit"]) * row["notional_m"] * 1e6 / 1e4
+                n["recs"].append(
+                    f"**Then look at {u} specifically.** Its spread of "
+                    f"{row['spread_bps']:.1f} bps should be delivering about "
+                    f"{row['predicted']:+.0f} bps on this book; it delivers "
+                    f"{row['bps']:+.1f}. That {abs(row['vs_fit']):.0f} bps gap "
+                    f"is worth roughly {f_money(gap_ccy)} and is the one place "
+                    "the pattern does not explain.")
 
     # industry
     if not ind.empty:
@@ -3578,6 +3711,27 @@ def s_industry(prs, ctx, nar):
     footer(s)
 
 
+def s_spread(prs, ctx, nar):
+    if not ctx["charts"].get("spread"):
+        return
+    L = ctx["spread_lens"]
+    s = new_slide(prs)
+    title(s, "What Explains the Result")
+    strapline(s, "Your performance follows the spread that was available to "
+                 "capture, market by market.")
+    picture(s, ctx["charts"]["spread"], MARGIN, Inches(1.52),
+            width=Inches(7.5))
+    lines = [l for l in nar["findings"]
+             if "tracks the spread" in l or "below that line" in l]
+    lines += [r for r in nar["recs"] if "tight-spread markets" in r
+              or "specifically" in r]
+    bullets(s, lines, Inches(8.20), Inches(1.72), Inches(4.55), Inches(4.4),
+            size=10.5)
+    note(s, "Markets with at least 50 orders. The line is a simple fit of "
+            "result against spread; bubbles are sized by share of value.")
+    footer(s)
+
+
 def s_size(prs, ctx, nar):
     s = new_slide(prs)
     title(s, "By Order Size")
@@ -3661,6 +3815,7 @@ def build_simple_deck(ctx: dict, nar: dict, out: Path) -> Path:
     s_algo(prs, ctx)
     s_market(prs, ctx, nar)
     s_industry(prs, ctx, nar)
+    s_spread(prs, ctx, nar)
     s_size(prs, ctx, nar)
     s_venue(prs, ctx, nar)
     s_advice(prs, ctx, nar)
