@@ -3226,7 +3226,11 @@ def spread_lens(mkt: pd.DataFrame, min_orders=50):
         "tight_names": list(tight.index),
         "tight_bps": (float(np.average(tight["bps"], weights=tight["weight_pct"]))
                       if len(tight) and tight["weight_pct"].sum() else np.nan),
-        "underperformer": t["vs_fit"].idxmin() if len(t) else None,
+        # rank the miss by money, not by bps: a 13 bps gap on a 3% market is
+        # worth far less than an 12 bps gap on a 15% one, and the client can
+        # only act on the second
+        "underperformer": ((t["vs_fit"] * t["notional_m"]).idxmin()
+                           if len(t) else None),
     }
 
 
