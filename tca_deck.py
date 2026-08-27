@@ -1688,8 +1688,8 @@ def chart_attribution(t: pd.DataFrame, outdir: Path, by="market",
     _zero_line(ax)
     span = np.nanmax(np.abs(vals)) if len(vals) else 1
     ax.set_xlim(min(-span * 0.45, np.nanmin(vals) * 1.5), span * 1.5)
-    _finish(ax, f"Contribution to total performance by {by}",
-            xlabel="contribution to the total (bps)")
+    _finish(ax, f"Effect on your total result, by {by}",
+            xlabel="effect on the total (bps)")
     _axis_note(ax, y=-0.10)
     return _save(fig, f"02_attribution_{by}", outdir)
 
@@ -1772,7 +1772,7 @@ def chart_adv(t: pd.DataFrame, outdir: Path) -> Path:
                        for i, r in t.iterrows()], fontsize=9.5)
     _zero_line(ax, vertical=False)
     _finish(ax, "Performance by order size",
-            xlabel="order size (% of average daily volume)",
+            xlabel="order size, as a % of what the share trades in a normal day",
             ylabel="bps vs benchmark (positive = saving)", axis="y")
     return _save(fig, "03_adv_curve", outdir)
 
@@ -1853,8 +1853,8 @@ def chart_industry(rows: list, outdir: Path, total_bps=None) -> Path:
     _zero_line(ax)
     span = np.nanmax(np.abs(vals)) if len(vals) else 1
     ax.set_xlim(min(-span * 0.45, float(np.nanmin(vals)) * 1.5), span * 1.5)
-    _finish(ax, "Contribution to total performance by industry",
-            xlabel="contribution to the total (bps)")
+    _finish(ax, "Effect on your total result, by industry",
+            xlabel="effect on the total (bps)")
     _axis_note(ax, y=-0.10)
     return _save(fig, "03b_industry", outdir)
 
@@ -2186,6 +2186,27 @@ def footer(slide, page=None):
     tf = pn.text_frame
     tf.paragraphs[0].alignment = PP_ALIGN.RIGHT
     _run(tf.paragraphs[0], str(page), size=8.5, color=T_MUTED)
+
+
+def _cover_line(hl: dict) -> str:
+    """The headline sentence for the cover notes, built in one piece."""
+    verb = "beat the reference price by" if hl["bps"] >= 0 else            "came in below the reference price by"
+    kept = "kept" if hl["bps"] >= 0 else "given away"
+    return (f"{f_bps(hl['bps'])} bps means that, on average, you {verb} "
+            f"{abs(hl['bps']) / 100:.3f}%. On {f_money(hl['notional'], 1)} "
+            f"traded, that works out at about "
+            f"{f_money(abs(hl['pnl_ccy']))} {kept}.")
+
+
+def notes(slide, text: str) -> None:
+    """Attach speaker notes.
+
+    Written plainly on purpose: these are read by whoever presents the pack,
+    who may not be the person who built it, and every term the slide uses gets
+    explained once here.
+    """
+    tf = slide.notes_slide.notes_text_frame
+    tf.text = text.strip()
 
 
 def picture(slide, path, left, top, width=None, height=None):
@@ -3247,8 +3268,8 @@ def chart_marketcap(t: pd.DataFrame, outdir: Path) -> Path:
     _zero_line(ax)
     span = float(np.nanmax(np.abs(vals))) if len(vals) else 1.0
     ax.set_xlim(min(-span * 0.5, float(np.nanmin(vals)) * 1.6), span * 1.6)
-    _finish(ax, "Contribution by market cap",
-            xlabel="contribution to the total (bps)")
+    _finish(ax, "Effect on your total result, by company size",
+            xlabel="effect on the total (bps)")
     return _save(fig, "03c_marketcap", outdir)
 
 
@@ -3311,7 +3332,7 @@ def chart_venue_country(t: pd.DataFrame, outdir: Path, min_weight=1.0) -> Path:
                        for x in VENUE_ORDER],
               loc="upper center", bbox_to_anchor=(0.5, -0.10), ncol=4,
               fontsize=10)
-    _finish(ax, "Where each market's volume goes")
+    _finish(ax, "How your shares changed hands, country by country")
     return _save(fig, "07_venue_by_market", outdir)
 
 
@@ -3361,8 +3382,8 @@ def chart_side(lens: dict, outdir: Path) -> Path:
     _zero_line(ax)
     span = float(np.nanmax(np.abs(vals))) if len(vals) else 1.0
     ax.set_xlim(min(-span * 1.35, float(np.nanmin(vals)) * 1.35), span * 1.35)
-    _finish(ax, "Money made and lost, by market and side",
-            xlabel=f"{CURRENCY} thousands vs benchmark")
+    _finish(ax, "Money made and lost, by country and direction",
+            xlabel=f"{CURRENCY} thousands better or worse than benchmark")
     _axis_note(ax, y=-0.09)
     return _save(fig, "06_side", outdir)
 
@@ -3447,12 +3468,13 @@ def chart_spread_lens(lens: dict, outdir: Path) -> Path:
         placed.append((x, y + pick[1] * yr / 380))
         ax.annotate(str(name), (x, y), textcoords="offset points",
                     xytext=pick, ha="center", fontsize=9.5, color=INK)
-    _finish(ax, "Result against the spread that was available",
-            xlabel="average spread in that market (bps)",
-            ylabel="bps vs benchmark (positive = saving)", axis="y")
+    _finish(ax, "Result against the buy/sell gap in each market",
+            xlabel="average buy/sell gap in that market (bps)",
+            ylabel="result in bps (higher is better)", axis="y")
     ax.text(1.0, -0.15,
-            f"Each bubble is a market, sized by share of value.  "
-            f"correlation r = {lens['r']:+.2f}",
+            "Each bubble is a market, sized by how much you trade there. "
+            f"They line up {abs(lens['r']) * 100:.0f}% of the way to a "
+            "straight line.",
             transform=ax.transAxes, fontsize=9, color=INK_MUTED,
             ha="right", va="top")
     return _save(fig, "05_spread_lens", outdir)
@@ -3625,8 +3647,9 @@ def build_simple_narrative(ctx: dict) -> dict:
         w, b = S["worst"], S["best"]
         headline_ccy = abs(hl["pnl_ccy"]) if np.isfinite(hl["pnl_ccy"]) else np.nan
         n["findings"].append(
-            f"**Splitting by side localises it sharply.** Your worst single "
-            f"pocket is **{w['label']}** — {w['weight_pct']:.1f}% of everything "
+            f"**Splitting buys from sells narrows it right down.** Your "
+            f"worst single pocket is **{w['label']}** — "
+            f"{w['weight_pct']:.1f}% of everything "
             f"you trade at {f_bps(w['bps'])} bps, or "
             f"**{f_money(w['pnl_ccy'])}**"
             + (f" — on its own bigger than the whole "
@@ -3663,10 +3686,10 @@ def build_simple_narrative(ctx: dict) -> dict:
     L = ctx.get("spread_lens")
     if L and abs(L["r"]) >= 0.6:
         n["findings"].append(
-            f"**Your result tracks the spread that was there to capture** "
-            f"(correlation {L['r']:+.2f}). You earn where spreads are wide and "
-            f"lose where they are tight — break-even sits at about "
-            f"**{L['breakeven']:.1f} bps** of spread.")
+            "**Your result follows the buy/sell gap almost exactly.** You make "
+            "money where that gap is wide and lose where it is narrow. The "
+            f"turning point is around **{L['breakeven']:.1f} bps** — below "
+            "that, there is too little gap to earn anything from.")
         if L["tight_names"] and np.isfinite(L["tight_bps"]):
             nm = ", ".join(L["tight_names"])
             n["findings"].append(
@@ -3695,42 +3718,44 @@ def build_simple_narrative(ctx: dict) -> dict:
                     if np.isfinite(vc.loc[worst].get("spread_bps", np.nan)) else np.nan
                 half = sp / 2 if np.isfinite(sp) else np.nan
                 n["findings"].append(
-                    f"**{worst} crosses the spread on {tk:.0f}% of its volume** "
-                    "and posts nothing at all"
-                    + (f". On a {sp:.1f} bps spread that is roughly "
-                       f"{half:.1f} bps handed over on every order."
+                    f"**In {worst} you pay the buy/sell gap on {tk:.0f}% of "
+                    "what you trade** and never leave an order waiting"
+                    + (f". With a gap of {sp:.1f} bps that is about "
+                       f"{half:.1f} bps given away on every single order."
                        if np.isfinite(half) else "."))
                 n["recs"].append(
-                    f"**Start posting in {', '.join(crossers)}.** "
-                    f"{worst} takes on {tk:.0f}% of its volume and never rests "
-                    "an order. This is the one place where the fix is venue, "
-                    "it is fully within your control, and it needs a "
-                    "configuration change rather than a change of strategy.")
+                    f"**Start leaving orders in the market in "
+                    f"{', '.join(crossers)}.** {worst} pays the buy/sell gap "
+                    f"on {tk:.0f}% of what it trades and never once waits for "
+                    "someone to come to it. This is a settings change, it is "
+                    "entirely in your control, and it is the clearest fix in "
+                    "this pack.")
             if passives:
                 nm2 = ", ".join(passives)
                 ex = passives[0]
                 n["findings"].append(
-                    f"**{nm2} already do the right thing on venue** — "
-                    f"{ex} posts {float(vc.loc[ex, 'Visible Post']):.0f}% and "
-                    f"crosses on only {float(vc.loc[ex, 'Visible Take']):.0f}%. "
-                    "Their shortfall is not a venue problem, so routing "
-                    "changes will not fix it.")
+                    f"**{nm2} already trade the right way** — {ex} leaves "
+                    f"{float(vc.loc[ex, 'Visible Post']):.0f}% of its orders "
+                    "waiting and pays the gap on only "
+                    f"{float(vc.loc[ex, 'Visible Take']):.0f}%. Whatever is "
+                    "costing them there, it is not where they trade.")
                 n["recs"].append(
-                    f"**In {nm2}, leave the venue mix alone and look at "
-                    "timing instead.** They already post and use the "
-                    "midpoint; what is left is participation rate and when in "
-                    "the day the orders run.")
+                    f"**In {nm2}, do not change where you trade — change how "
+                    "fast.** They already wait for others to come to them and "
+                    "already use the private venues. What is left is how "
+                    "quickly the orders run and what time of day they run.")
         vc = ctx.get("venue_country")
         if vc is not None and not vc.empty and "bps" in vc:
             good = vc[vc["bps"] > 0].sort_values("bps", ascending=False)
             if len(good):
                 g = good.index[0]
                 n["notes"].append(
-                    f"{g} is the template worth copying: it posts "
-                    f"{float(vc.loc[g, 'Visible Post']):.0f}%, takes only "
-                    f"{float(vc.loc[g, 'Visible Take']):.0f}% and does "
-                    f"{float(vc.loc[g, 'Dark']):.0f}% in dark — the opposite "
-                    "profile to your weakest markets.")
+                    f"{g} is the one to copy: it leaves "
+                    f"{float(vc.loc[g, 'Visible Post']):.0f}% of orders "
+                    "waiting, pays the gap on only "
+                    f"{float(vc.loc[g, 'Visible Take']):.0f}%, and does "
+                    f"{float(vc.loc[g, 'Dark']):.0f}% at the midpoint — the "
+                    "exact opposite of your weakest countries.")
 
         # the market that misses the pattern is the real place to look
         u = L["underperformer"]
@@ -3775,9 +3800,11 @@ def build_simple_narrative(ctx: dict) -> dict:
                 f"{f_bps(adv.loc[best, 'bps'])} for {best}, and it is "
                 f"{adv.loc[first, 'weight_pct']:.0f}% of everything you trade.")
             n["recs"].append(
-                f"**Slow the small orders down.** The {first} band is most of "
-                "your value and your weakest result. More time and more "
-                "posting on that flow is the biggest single saving available.")
+                f"**Give your small orders more time.** The {first} band is "
+                "most of what you trade and your weakest result. Letting those "
+                "orders run longer, and waiting for others to come to you "
+                "rather than paying the gap, is the biggest single saving "
+                "available to you.")
         else:
             n["findings"].append(
                 f"By size, best on **{best}** ({f_bps(adv.loc[best, 'bps'])}) "
@@ -3873,8 +3900,10 @@ def s_cover(prs, ctx):
 
     lines = []
     if np.isfinite(hl.get("spread_bps", np.nan)):
-        lines.append(f"Average spread **{hl['spread_bps']:.1f} bps**, typical "
-                     f"order **{hl['adv_pct']:.1f}%** of the day's volume.")
+        lines.append(f"A typical order was **{hl['adv_pct']:.1f}%** of what "
+                     "that share normally trades in a day, in markets where "
+                     f"the buy/sell gap averaged **{hl['spread_bps']:.1f} bps** "
+                     "(0.01% = 1 bps).")
     if np.isfinite(hl.get("dark_share", np.nan)):
         lines.append(f"**{hl['dark_share']:.1f}%** of volume traded in dark.")
     lines.append("All figures are taken from your published post-trade report "
@@ -3882,6 +3911,23 @@ def s_cover(prs, ctx):
     bullets(s, lines, MARGIN, Inches(4.35), Inches(11.9), Inches(1.5), size=12.5)
     note(s, "A plus means you beat the benchmark and saved money. A minus means "
             "it cost you.")
+    notes(s, f"""WHAT THIS SLIDE SHOWS
+The headline numbers for the whole period, in one place.
+
+WORDS USED HERE
+"bps" is short for basis points. 1 bps = 0.01%, so 100 bps = 1%. We use it
+because these differences are small compared with the amount of money traded,
+and percentages would be full of zeros.
+
+"Benchmark" is a fair reference price we compare you against. For most of your
+orders it is the average price everyone else paid while your order was running.
+If you did better than that reference, you saved money.
+
+THE NUMBER THAT MATTERS
+{_cover_line(hl)}
+
+Everything in this pack comes from your own post-trade report, so every number
+here should match what you already have.""")
     footer(s)
 
 
@@ -3907,6 +3953,19 @@ def s_summary(prs, ctx, nar):
          color=T_HEAD)
     bullets(s, nar["recs"][:4], x2, Inches(1.98), Inches(5.55), Inches(4.0),
             size=11)
+    notes(s, """WHAT THIS SLIDE SHOWS
+Left: what the numbers say. Right: what we think you should do about it.
+
+HOW TO READ IT
+Everything on the left is measured, not estimated. Every figure traces back to
+a slide later in the pack.
+
+The right-hand side is ordered by size of the opportunity, biggest first. Each
+one names a specific change, not just a place to look.
+
+IF YOU ONLY READ ONE SLIDE
+Read this one. The rest of the pack is the evidence behind it, in case someone
+asks "how do you know?".""")
     footer(s)
 
 
@@ -3919,7 +3978,8 @@ def s_algo(prs, ctx):
             width=Inches(7.4))
     algo = ctx["algo_table"]
     if not algo.empty:
-        data = [["Algo", "Orders", "% value", "Spread", "bps", "Contrib"]]
+        data = [["Algo", "Orders", "% of value", "Gap", "Result",
+                 "Effect on total"]]
         colored, thin = {}, False
         for i, (idx, r) in enumerate(algo.iterrows(), start=1):
             tag = ""
@@ -3951,14 +4011,35 @@ def s_algo(prs, ctx):
                  "every order. That is arithmetic, not performance — to judge "
                  "it we would need to measure it against arrival instead.",
                  size=9.5, color=T_MUTED)
+    notes(s, """WHAT THIS SLIDE SHOWS
+How each of your trading algorithms performed.
+
+WORDS USED HERE
+An "algorithm" is the automated strategy that works your order in the market
+for you. VWAP spreads an order out through the day so you get close to the
+day's average price. IIS aims to trade at the closing price.
+
+"Contribution" is the important column. An algorithm only moves your overall
+number if it performs well AND handles a lot of your volume. Something that is
+brilliant on 1% of your trading barely matters.
+
+WATCH OUT FOR THIS
+If an algorithm shows exactly 0.0, that is not a perfect score. It happens when
+the algorithm trades in the closing auction and is then measured against the
+closing price - it is being compared with itself, so the answer is always zero.
+It does not tell us whether that algorithm did a good or bad job. To judge it we
+would need to compare it against the price when the order arrived instead.
+
+Anything marked with a star has too few orders to be reliable. A handful of
+trades can produce a spectacular number by luck.""")
     footer(s)
 
 
 def s_market(prs, ctx, nar):
     s = new_slide(prs)
     title(s, "By Market")
-    strapline(s, "A market only moves your total if it is both good or bad AND "
-                 "big.")
+    strapline(s, "A country only moves your total if you did well or badly "
+                 "there AND you traded a lot there.")
     picture(s, ctx["charts"].get("attribution"), MARGIN, Inches(1.52),
             width=Inches(7.5))
     lines = [l for l in nar["findings"]
@@ -3972,6 +4053,22 @@ def s_market(prs, ctx, nar):
                        "you trade.")
     bullets(s, lines, Inches(8.20), Inches(1.72), Inches(4.55), Inches(4.3),
             size=11)
+    notes(s, """WHAT THIS SLIDE SHOWS
+Which countries helped your result and which hurt it.
+
+HOW TO READ IT
+The bar is not simply "how well did we trade there". It is how well you traded
+there multiplied by how much you traded there.
+
+That matters. A country can be terrible but tiny, and barely affect your total.
+Another can be only slightly bad but enormous, and dominate it. The label under
+each country name shows both halves, so you can see which is which.
+
+Blue bars add to your result. Red bars take away from it. Add all the bars
+together and you get the headline number from slide 1.
+
+WHY IT MATTERS
+It tells you where your attention is actually worth spending.""")
     footer(s)
 
 
@@ -3990,6 +4087,20 @@ def s_industry(prs, ctx, nar):
     bullets(s, lines, Inches(8.05), Inches(1.72), Inches(4.7), Inches(4.3),
             size=11)
     note(s, "Sector figures are taken from the published industry breakdown.")
+    notes(s, """WHAT THIS SLIDE SHOWS
+The same money as the previous slide, but grouped by the kind of company you
+were trading rather than the country.
+
+HOW TO READ IT
+Exactly like the country slide: performance multiplied by how much you traded.
+
+WHY IT MATTERS
+This is a cross-check. If a problem shows up in one country AND in one sector,
+those are probably the same orders being described two different ways - so
+there is one thing to fix, not two.
+
+If a sector looks bad but is spread evenly across countries, that points at the
+shares themselves rather than at where or how you traded them.""")
     footer(s)
 
 
@@ -3998,8 +4109,8 @@ def s_venue_country(prs, ctx, nar):
         return
     s = new_slide(prs)
     title(s, "Venue, Market by Market")
-    strapline(s, "The same four venue types, split by where you were trading. "
-                 "This is what decides the fix.")
+    strapline(s, "How your shares actually changed hands, country by "
+                 "country. This is what decides the fix.")
     picture(s, ctx["charts"]["venue_country"], MARGIN, Inches(1.50),
             width=Inches(7.3))
     lines = [l for l in nar["findings"]
@@ -4010,6 +4121,38 @@ def s_venue_country(prs, ctx, nar):
             size=10.5)
     note(s, "Percentages are of executed value in that market and sum to 100. "
             "Markets below 1% of value are omitted.")
+    notes(s, """WHAT THIS SLIDE SHOWS
+Where your shares actually change hands in each country. There are four ways,
+and they are worth understanding because the difference between them is money.
+
+THE FOUR WAYS
+AUCTION (blue) - the single big batch trade that happens at the open or the
+close of the day. Everyone trades at one price.
+
+POSTED (green) - you leave your order sitting in the market and wait for
+someone to come to you. You earn the spread for being patient. The risk is that
+you might not get filled.
+
+CROSSING THE SPREAD (orange) - you take the price that is on offer right now.
+It is immediate and certain, but you pay away roughly half the spread every
+time you do it.
+
+DARK (purple) - a private venue where two sides meet at the midpoint price. No
+spread paid and none earned. You only get filled if someone else happens to
+want the other side.
+
+HOW TO READ IT
+Each bar adds up to 100% of what you traded in that country. Broadly, more
+green and purple is better, more orange means you are paying the spread away.
+
+WHY THIS SLIDE DECIDES THE FIX
+A country that loses money AND crosses the spread a lot can be improved by
+changing settings - that is fully in your control.
+
+A country that loses money but already posts and already uses dark cannot be
+fixed that way. Its problem is something else, usually how fast the orders run
+or what time of day they run. Telling that desk to "post more" would waste
+their time.""")
     footer(s)
 
 
@@ -4018,18 +4161,41 @@ def s_side(prs, ctx, nar):
         return
     s = new_slide(prs)
     title(s, "By Market and Side")
-    strapline(s, "The same money, split by whether you were buying or selling. "
-                 "This is where the number actually sits.")
+    strapline(s, "The same money, split into what you bought and what you "
+                 "sold. This is where the number really sits.")
     picture(s, ctx["charts"]["side"], MARGIN, Inches(1.50),
             width=Inches(7.2))
     lines = [l for l in nar["findings"]
-             if "localises it sharply" in l or "mirror image" in l
+             if "narrows it right down" in l or "mirror image" in l
              or "widest split" in l]
     lines += [r for r in nar["recs"] if "Go straight at" in r]
     bullets(s, lines, Inches(7.95), Inches(1.70), Inches(4.8), Inches(4.5),
             size=10.5)
     note(s, "Cells above 1% of value. Money is that cell's share of value "
             "multiplied by its result, so it reconciles to the headline.")
+    notes(s, """WHAT THIS SLIDE SHOWS
+The same money again, but now split by whether you were buying or selling.
+
+HOW TO READ IT
+Each row is one country and one direction. "India - BUY" means every share you
+bought in India over the period.
+
+The bars are in dollars rather than percentages, so the longest bar really is
+the largest amount of money. A big percentage on a tiny market cannot outrank a
+small percentage on a huge one.
+
+WHY THIS IS THE SHARPEST SLIDE IN THE PACK
+Buying and selling in the same country often go in opposite directions, and
+they cancel each other out on every other slide. A country can look calm
+overall while hiding a large loss on one side and a large gain on the other.
+Splitting them apart is what lets you point at one specific pocket instead of a
+whole country.
+
+ONE THING TO CHECK BEFORE ACTING
+A gap between buying and selling that lasts for months is often about the
+market direction rather than the trading. If prices were rising all period and
+you were mostly buying, buying will look worse. Worth confirming before
+changing anything.""")
     footer(s)
 
 
@@ -4039,18 +4205,42 @@ def s_spread(prs, ctx, nar):
     L = ctx["spread_lens"]
     s = new_slide(prs)
     title(s, "What Explains the Result")
-    strapline(s, "Your performance follows the spread that was available to "
-                 "capture, market by market.")
+    strapline(s, "You make money where the buy/sell gap is wide, and lose "
+                 "money where it is narrow.")
     picture(s, ctx["charts"]["spread"], MARGIN, Inches(1.52),
             width=Inches(7.5))
     lines = [l for l in nar["findings"]
-             if "tracks the spread" in l or "below that line" in l]
+             if "follows the buy/sell gap" in l or "below that line" in l]
     lines += [r for r in nar["recs"] if "tight-spread markets" in r
               or "specifically" in r]
     bullets(s, lines, Inches(8.20), Inches(1.72), Inches(4.55), Inches(4.4),
             size=10.5)
-    note(s, "Markets with at least 50 orders. The line is a simple fit of "
-            "result against spread; bubbles are sized by share of value.")
+    note(s, "Countries where you placed at least 50 orders. The line is the "
+            "overall trend; each bubble is sized by how much you trade there.")
+    notes(s, f"""WHAT THIS SLIDE SHOWS
+Why some countries work well for you and others do not.
+
+WORDS USED HERE
+The "spread" is the gap between the highest price a buyer is offering and the
+lowest price a seller is asking. If you are patient and let others come to you,
+you earn that gap. If you are in a hurry and take the price on offer, you pay
+it.
+
+A wide spread means there is a lot to be gained by being patient. A tight
+spread means there is almost nothing there either way.
+
+HOW TO READ IT
+Each bubble is a country. Further left = tighter spread. Higher up = better
+result. The bubble size is how much you trade there.
+
+The dotted line is roughly the point where the two balance out. Countries to
+the left of it are ones where there is very little spread to be earned.
+
+WHY IT MATTERS
+Your results line up with the spread almost exactly. That tells us your
+strategy makes its money by earning the spread. Where the spread is tiny, that
+strategy has nothing to work with - so those countries do not need more effort,
+they need a different approach. That is what the next slide gets into.""")
     footer(s)
 
 
@@ -4069,6 +4259,30 @@ def s_size(prs, ctx, nar):
             size=10.5)
     picture(s, ctx["charts"].get("cap"), Inches(8.05), Inches(4.20),
             width=Inches(4.75))
+    notes(s, """WHAT THIS SLIDE SHOWS
+Whether your small orders or your big orders get the better result.
+
+WORDS USED HERE
+"% of average daily volume" is how big your order is compared with how much
+that share normally trades in a whole day. An order that is 1% of a normal day
+is small and easy to hide. An order that is 10% is large, and the market will
+notice you.
+
+The smaller chart splits the same money by company size instead - the largest
+companies are usually the easiest to trade because so much changes hands.
+
+HOW TO READ IT
+Normally you expect big orders to do worse. You are asking the market to
+absorb more, so the price moves against you.
+
+WHY IT MATTERS
+If your small, easy orders do worse than your large, hard ones, that is
+backwards - and it usually means the easy flow is being pushed through faster
+than it needs to be. Easy flow is normally most of your money, so it is worth
+getting right.
+
+Groups with very few orders are ignored in the commentary. A handful of trades
+can produce an impressive number purely by luck.""")
     footer(s)
 
 
@@ -4100,6 +4314,23 @@ def s_venue(prs, ctx, nar):
             size=10.5)
     note(s, "Venue split is taken from the published venue segment breakdown, "
             "as a % of executed value.")
+    notes(s, """WHAT THIS SLIDE SHOWS
+The same four ways of trading as the market-by-market slide, but split by
+algorithm instead of by country.
+
+A REMINDER OF THE FOUR
+Auction - the big batch trade at the open or close.
+Posted - you wait and let others come to you, and you earn the spread.
+Crossing the spread - you take what is on offer now, and you pay the spread.
+Dark - a private venue at the midpoint, where you neither pay nor earn it.
+
+HOW TO READ IT
+Each bar is 100% of what that algorithm traded.
+
+WHY IT MATTERS
+It shows whether each algorithm is using all the tools available to it. An
+algorithm that only ever crosses the spread is leaving the cheapest options
+untouched - and that is usually a settings choice rather than a limitation.""")
     footer(s)
 
 
@@ -4125,6 +4356,26 @@ def s_advice(prs, ctx, nar):
              color=T_MUTED)
         bullets(s, ["~" + x for x in nar["notes"][:3]], MARGIN, Inches(6.25),
                 Inches(12.1), Inches(0.8), size=9, gap=2)
+    notes(s, """WHAT THIS SLIDE SHOWS
+What we would actually change, in order of how much it is worth.
+
+HOW TO READ IT
+Each item names a specific change and roughly what it is worth in money. They
+are ordered by size, so number 1 is where to start.
+
+We have deliberately avoided "look into X". Everything here is something that
+can be acted on.
+
+THE SMALL PRINT AT THE BOTTOM
+"Worth knowing" lists the things that could change these conclusions. It is
+short on purpose - please read it before acting on anything above. In
+particular, where a number could have an innocent explanation, we say so rather
+than presenting it as settled.
+
+WHAT WE WOULD DO NEXT
+Run the same analysis on the next period and see whether the number moved. The
+comparison that matters is against your own result on the same kind of flow,
+not against anyone else.""")
     footer(s)
 
 
