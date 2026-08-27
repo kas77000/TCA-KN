@@ -1211,6 +1211,55 @@ def dark_frame(df: pd.DataFrame, dark_algos: list) -> pd.DataFrame:
     return d
 
 
+def dark_sanity(d: pd.DataFrame, published_bps=None,
+                value_col="slip_primary") -> bool:
+    """Is the dark section fit to show?
+
+    The dark subset is measured from the order file while the headline comes
+    from the published report. If the two are far apart, the order-level
+    slippage column is not the same quantity as the report's - wrong sign,
+    wrong benchmark, or a handful of orders dominating - and no chart built on
+    it should reach a client. Returns True when the section looks usable.
+    """
+    if d.empty:
+        return False
+    got = wmean(winsorize(d[value_col]), d["notional"])
+    log("")
+    log("  DARK SECTION SANITY")
+    log(f"    dark-capable subset: {len(d):,} orders, "
+        f"{CURRENCY} {d['notional'].sum()/1e6:,.0f}m, "
+        f"{got:+.1f} bps (from the order file)")
+
+    # the orders doing the most damage, by money not by bps
+    d = d.assign(_m=d[value_col] * d["notional"] / 1e4)
+    worst = d.nsmallest(5, "_m")
+    tot = float(d["_m"].sum())
+    if len(worst) and tot != 0:
+        share = 100 * float(worst["_m"].sum()) / tot if tot else np.nan
+        log(f"    top 5 losing orders account for {share:.0f}% of the subset's "
+            "money impact:")
+        for _, r in worst.iterrows():
+            sym = r.get("symbol", "?")
+            log(f"      {str(sym):<12} {r[value_col]:+9.1f} bps  "
+                f"{CURRENCY} {r['_m']:>12,.0f}  "
+                f"{r.get('market', '?')}")
+
+    ok = True
+    if published_bps is not None and np.isfinite(published_bps) and np.isfinite(got):
+        if abs(got - published_bps) > 15:
+            ok = False
+            log("")
+            log(f"    ** The subset is {got:+.1f} bps but the published book is "
+                f"{published_bps:+.1f} bps.")
+            log("    ** A gap that size is a measurement problem, not a "
+                "finding. Do NOT present the dark charts until it is")
+            log("       resolved. Check, in order: the sign of the order-level "
+                "slippage column; whether it is the same benchmark")
+            log("       the report used; and whether the outliers above are "
+                "real orders or bad rows.")
+    return ok
+
+
 def dark_zero_vs_any(d: pd.DataFrame, value_col="slip_primary") -> pd.DataFrame:
     """The headline dark number: no dark fill vs any, within dark-capable algos."""
     if d.empty:
@@ -1773,10 +1822,11 @@ def chart_dark_zero_vs_any(t: pd.DataFrame, outdir: Path, note: str) -> Path:
     if len(t) == 2:
         # say which side won in words: a signed "gap" reads ambiguously when
         # the metric is a cost and the sign convention is already inverted
-        gap = float(t["bps"].iloc[0] - t["bps"].iloc[1])
+        # positive = saving, so the better group is the HIGHER bar
+        gap = float(t["bps"].iloc[1] - t["bps"].iloc[0])
         winner = t.index[1] if gap > 0 else t.index[0]
         ax.text(0.99, 0.08,
-                f"{winner.lower()} cheaper by {abs(gap):.1f} bps",
+                f"{winner.lower()} better by {abs(gap):.1f} bps",
                 transform=ax.transAxes, ha="right", fontsize=12,
                 color=INK, fontweight="bold")
     _finish(ax, "Performance: no dark vs any dark",
@@ -2397,6 +2447,24 @@ def build_narrative(ctx: dict) -> dict:
             n["dark_verdict"].append(
                 "~The answer flips depending on whether we weight by order "
                 "size, so it holds for some order sizes and not others.")
+
+    # --- already saturated? -------------------------------------------------
+    if not dmkt.empty and "avail_orders_pct" in dmkt:
+        avail = wmean(dmkt["avail_orders_pct"], dmkt["notional_m"])
+        if np.isfinite(avail) and avail >= 70:
+            n["findings"].append(
+                f"**You already get dark on {avail:.0f}% of eligible orders.** "
+                "In the markets where we offer it, almost every order is "
+                "already interacting with the midpoint — there is very little "
+                "headroom left to add.")
+            n["dark_verdict"].append(
+                f"~With {avail:.0f}% of eligible orders already getting a dark "
+                "fill there is no clean no-dark group to compare against, so "
+                "this is a more-versus-less comparison rather than a "
+                "with-versus-without one.")
+            # a "use more dark" recommendation is not available here
+            n["rec_tags"].pop("dark_market", None)
+            n["recs"] = [r for r in n["recs"] if "Push dark hardest" not in r]
 
     # --- where dark actually pays ------------------------------------------
     if not dmkt.empty:
@@ -3173,6 +3241,7 @@ def analyse(df: pd.DataFrame) -> dict:
     ctx["dark_split_note"] = d.attrs.get(
         "split_note", "No dark-capable orders found.") if not d.empty \
         else "No dark-capable orders found in this dataset."
+    ctx["dark_ok"] = dark_sanity(d, (REPORT.get("totals") or {}).get("bps"))
     ctx["dark_zero_vs_any"] = dark_zero_vs_any(d)
     ctx["dark_ladder"] = dark_ladder(d)
     ctx["dark_completion"] = dark_completion(d)
