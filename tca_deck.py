@@ -150,6 +150,22 @@ CLIENTS = {
             ("BUY",  1365, 113_356_784, 269_638_873, 53.4, 1.8, 1.3, 8.7, 8.4, 4.5),
             ("SELL",  709, 121_460_230, 235_543_520, 46.6, 2.0, 1.5, 8.6, 3.7, 1.7),
         ],
+        # (market, side, % of total value, bps) - from the country/side
+        # breakdown. Market totals implied here reconcile with "country" above.
+        "country_side": [
+            ("Hong Kong",     "BUY", 14.2,  30.2), ("Hong Kong",     "SELL", 12.8,  -2.6),
+            ("Japan",         "BUY", 16.3,   0.2), ("Japan",         "SELL", 15.3,  -3.0),
+            ("Taiwan",        "BUY",  8.4,  13.1), ("Taiwan",        "SELL",  6.7,   4.9),
+            ("India",         "BUY",  7.2, -17.3), ("India",         "SELL",  6.3,  10.5),
+            ("Stock Connect", "BUY",  4.6,   1.9), ("Stock Connect", "SELL",  1.9,  -1.5),
+            ("Indonesia",     "BUY",  1.4,  15.4), ("Indonesia",     "SELL",  1.9,  42.3),
+            ("Malaysia",      "BUY",  0.3,  -0.4), ("Malaysia",      "SELL",  0.9,  82.6),
+            ("Thailand",      "BUY",  0.2,  -4.7), ("Thailand",      "SELL",  0.5, -27.7),
+            ("Philippines",   "BUY",  0.0, -13.3), ("Philippines",   "SELL",  0.2,  68.3),
+            ("Australia",     "BUY",  0.4,  -0.5), ("Australia",     "SELL",  0.0, -12.2),
+            ("Singapore",     "BUY",  0.2,   0.6),
+            ("New Zealand",   "BUY",  0.1,  -2.2),
+        ],
         # industry: (name, issues, %weight, impact bps, weighted impact bps)
         "industry": [
             ("Consumer Non-cyclical", 141,  9.4,   8.6,  0.8),
@@ -228,7 +244,21 @@ CLIENTS = {
             ("5-10%",    28,  8_113_156, 105_474_814, 10.0,  7.8,  6.9, 4.1,  4.8,  0.5),
             ("10-25%",    5,  1_173_588,  22_233_421,  2.0, 14.3, 12.4, 4.0, -4.3, -0.1),
         ],
-        "side": None,   # not captured for NPS yet
+        "side": None,   # the side summary itself was not captured
+        "country_side": [
+            ("Japan",         "BUY", 38.4,  -3.7), ("Japan",         "SELL", 30.5,   2.3),
+            ("Australia",     "BUY",  8.4,  -0.5), ("Australia",     "SELL",  4.0,  -1.0),
+            ("Hong Kong",     "BUY",  5.7,  -2.4), ("Hong Kong",     "SELL",  0.9,   1.8),
+            ("India",         "BUY",  2.4,   2.0), ("India",         "SELL",  3.4,   1.2),
+            ("Taiwan",        "BUY",  3.3, -11.3),
+            ("Singapore",     "BUY",  1.3, -13.8), ("Singapore",     "SELL",  0.7,  -0.3),
+            ("Stock Connect", "BUY",  0.4,   4.3), ("Stock Connect", "SELL",  0.1, -17.1),
+            ("Malaysia",      "BUY",  0.3,  -0.0),
+            ("Indonesia",     "BUY",  0.1,  -4.9),
+            ("New Zealand",   "BUY",  0.1,  -2.8),
+            ("Philippines",   "BUY",  0.0,  -0.9),
+            ("USA",           "BUY",  0.0,   2.2),
+        ],
 
         "industry": [
             ("Consumer Non-cyclical",  91, 12.5,   2.8,  0.4),
@@ -3193,6 +3223,57 @@ def chart_marketcap(t: pd.DataFrame, outdir: Path) -> Path:
     return _save(fig, "03c_marketcap", outdir)
 
 
+def side_lens(rows, total_notional, min_weight=2.0):
+    """Where a market's result splits by side.
+
+    Both books carry large buy/sell gaps inside a market that mostly cancel at
+    the total, so the headline hides them. Working in money rather than basis
+    points finds the single cell that matters.
+    """
+    if not rows or not np.isfinite(total_notional):
+        return None
+    t = pd.DataFrame(list(rows), columns=["market", "side", "weight_pct", "bps"])
+    t["notional"] = t["weight_pct"] / 100 * total_notional
+    t["pnl_ccy"] = t["bps"] * t["notional"] / 1e4
+    t["label"] = t["market"] + " · " + t["side"]
+
+    wide = t.pivot_table(index="market", columns="side", values="bps")
+    wide["gap"] = wide.get("BUY", np.nan) - wide.get("SELL", np.nan)
+    wt = t.groupby("market")["weight_pct"].sum()
+    wide["weight_pct"] = wt
+    big = wide[(wide["weight_pct"] >= min_weight) & wide["gap"].notna()]
+
+    shown = t[t["weight_pct"] >= 1.0].sort_values("pnl_ccy")
+    return {
+        "table": t.sort_values("pnl_ccy"),
+        "shown": shown,
+        "worst": t.loc[t["pnl_ccy"].idxmin()] if len(t) else None,
+        "best": t.loc[t["pnl_ccy"].idxmax()] if len(t) else None,
+        "widest": (big["gap"].abs().idxmax() if len(big) else None),
+        "wide": big,
+    }
+
+
+def chart_side(lens: dict, outdir: Path) -> Path:
+    """Money made or lost in each market, split by side."""
+    if not lens or lens["shown"].empty:
+        return None
+    t = lens["shown"]
+    fig, ax = plt.subplots(figsize=(10.0, 0.34 * len(t) + 2.2))
+    ys = np.arange(len(t))[::-1]
+    vals = (t["pnl_ccy"] / 1e3).values
+    ax.barh(ys, vals, height=0.62, color=_sign_colors(vals), zorder=3)
+    ax.set_yticks(ys, [f"{r.label}   ({r.weight_pct:.1f}% · {r.bps:+.1f} bps)"
+                       for r in t.itertuples()], fontsize=9)
+    _hbar_labels(ax, ys, vals, fmt="{:+,.0f}k")
+    _zero_line(ax)
+    span = float(np.nanmax(np.abs(vals))) if len(vals) else 1.0
+    ax.set_xlim(min(-span * 1.35, float(np.nanmin(vals)) * 1.35), span * 1.35)
+    _finish(ax, "Money made and lost, by market and side",
+            xlabel=f"{CURRENCY} thousands vs benchmark")
+    _axis_note(ax, y=-0.09)
+    return _save(fig, "06_side", outdir)
+
 def spread_lens(mkt: pd.DataFrame, min_orders=50):
     """How much of the result is explained by the spread that was available?
 
@@ -3320,6 +3401,12 @@ def analyse_report_only() -> dict:
         "industry": INDUSTRY_REPORT,
         "dark_markets": list(DARK_MARKETS or []),
     }
+    ctx["side_lens"] = side_lens(REPORT.get("country_side"), hl["notional"])
+    if ctx["side_lens"] and ctx["side_lens"]["worst"] is not None:
+        w = ctx["side_lens"]["worst"]
+        log(f"  side lens: worst cell {w['label']} "
+            f"{w['bps']:+.1f} bps on {w['weight_pct']:.1f}% of value "
+            f"= {f_money(w['pnl_ccy'])}")
     ctx["spread_lens"] = spread_lens(ctx["market_table"])
     if ctx["spread_lens"]:
         L = ctx["spread_lens"]
@@ -3356,6 +3443,8 @@ def make_simple_charts(ctx: dict, outdir: Path) -> dict:
     c["venue"] = chart_venue(outdir)
     # only worth an exhibit where the relationship actually holds; on a book
     # where it does not, the chart would invite a story the data will not carry
+    if ctx.get("side_lens"):
+        c["side"] = chart_side(ctx["side_lens"], outdir)
     L = ctx.get("spread_lens")
     if L and abs(L["r"]) >= 0.6:
         c["spread"] = chart_spread_lens(L, outdir)
@@ -3432,6 +3521,46 @@ def build_simple_narrative(ctx: dict) -> dict:
             n["findings"].append(
                 f"**{worst2}** are where you lose: {bad.index[0]} runs "
                 f"{f_bps(r['bps'])} bps on {r['weight_pct']:.0f}% of value.")
+
+    # --- the side split: usually the tightest localisation available --------
+    S = ctx.get("side_lens")
+    if S and S["worst"] is not None:
+        w, b = S["worst"], S["best"]
+        headline_ccy = abs(hl["pnl_ccy"]) if np.isfinite(hl["pnl_ccy"]) else np.nan
+        n["findings"].append(
+            f"**Splitting by side localises it sharply.** Your worst single "
+            f"pocket is **{w['label']}** — {w['weight_pct']:.1f}% of everything "
+            f"you trade at {f_bps(w['bps'])} bps, or "
+            f"**{f_money(w['pnl_ccy'])}**"
+            + (f" — on its own bigger than the whole "
+               f"{'shortfall' if hl['bps'] < 0 else 'net result'} of "
+               f"{f_money(headline_ccy)}."
+               if np.isfinite(headline_ccy) and abs(w["pnl_ccy"]) > headline_ccy
+               else "."))
+        if b is not None and b["pnl_ccy"] > 0:
+            n["findings"].append(
+                f"The mirror image is **{b['label']}** at {f_bps(b['bps'])} bps, "
+                f"worth **{f_money(b['pnl_ccy'])}**. Same desk, same period — "
+                "the difference is worth understanding.")
+        if S["widest"] is not None:
+            g = S["wide"].loc[S["widest"]]
+            n["findings"].append(
+                f"**{S['widest']}** shows the widest split: buys "
+                f"{g.get('BUY', np.nan):+.1f} bps against sells "
+                f"{g.get('SELL', np.nan):+.1f}, a "
+                f"**{abs(g['gap']):.0f} bps** gap on the same names in the "
+                "same market.")
+        n["recs"].insert(0,
+            f"**Go straight at {w['label']} orders.** At {f_bps(w['bps'])} bps "
+            f"on {w['weight_pct']:.1f}% of your value this is "
+            f"{f_money(abs(w['pnl_ccy']))} in one cell — a far tighter target "
+            "than any whole-market number. Pull those orders and look at how "
+            "they were scheduled.")
+        n["notes"].append(
+            "A persistent buy/sell gap inside one market over a period this "
+            "long is usually the flow being directional into a trending market "
+            "rather than the algo behaving differently on each side. Worth "
+            "confirming before acting.")
 
     # --- what the spread explains, and therefore what to actually do --------
     L = ctx.get("spread_lens")
@@ -3715,6 +3844,26 @@ def s_industry(prs, ctx, nar):
     footer(s)
 
 
+def s_side(prs, ctx, nar):
+    if not ctx["charts"].get("side"):
+        return
+    s = new_slide(prs)
+    title(s, "By Market and Side")
+    strapline(s, "The same money, split by whether you were buying or selling. "
+                 "This is where the number actually sits.")
+    picture(s, ctx["charts"]["side"], MARGIN, Inches(1.50),
+            width=Inches(7.2))
+    lines = [l for l in nar["findings"]
+             if "localises it sharply" in l or "mirror image" in l
+             or "widest split" in l]
+    lines += [r for r in nar["recs"] if "Go straight at" in r]
+    bullets(s, lines, Inches(7.95), Inches(1.70), Inches(4.8), Inches(4.5),
+            size=10.5)
+    note(s, "Cells above 1% of value. Money is that cell's share of value "
+            "multiplied by its result, so it reconciles to the headline.")
+    footer(s)
+
+
 def s_spread(prs, ctx, nar):
     if not ctx["charts"].get("spread"):
         return
@@ -3819,6 +3968,7 @@ def build_simple_deck(ctx: dict, nar: dict, out: Path) -> Path:
     s_algo(prs, ctx)
     s_market(prs, ctx, nar)
     s_industry(prs, ctx, nar)
+    s_side(prs, ctx, nar)
     s_spread(prs, ctx, nar)
     s_size(prs, ctx, nar)
     s_venue(prs, ctx, nar)
@@ -4119,7 +4269,8 @@ def main(argv=None) -> int:
     INDUSTRY_REPORT = cfg["industry"]
     ALGO_REPORT     = cfg.get("algo_report")
     REPORT          = {k: cfg.get(k) for k in
-                       ("country", "marketcap", "adv", "side", "totals")}
+                       ("country", "marketcap", "adv", "side", "country_side",
+                        "totals")}
     REFERENCE       = cfg["reference"]
 
     out = args.out or Path(CLIENT_NAME) / "output"
@@ -4145,7 +4296,11 @@ def main(argv=None) -> int:
                       "by_market": ctx["market_table"],
                       "by_adv_bucket": ctx["adv_table"],
                       "by_market_cap": ctx["cap_table"],
-                      "by_side": ctx["side_table"]}, out / "tables.xlsx")
+                      "by_side": ctx["side_table"],
+                      "by_market_side": (ctx["side_lens"]["table"]
+                                         if ctx.get("side_lens")
+                                         else pd.DataFrame())},
+                     out / "tables.xlsx")
         (out / "run_log.txt").write_text("\n".join(LOG), encoding="utf-8")
         log("")
         log("Done. Everything is in " + str(out.resolve()))
