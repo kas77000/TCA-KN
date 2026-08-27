@@ -3164,6 +3164,511 @@ def make_sample(path: Path, n_target=2074, seed=SEED) -> Path:
     return path
 
 
+
+
+# ===========================================================================
+# 12. SIMPLE DECK  (--simple)
+# ===========================================================================
+# Built entirely from the published report tables in CLIENTS. No order file is
+# read, so nothing here can be synthetic: every figure is the one the client
+# already has in their own post-trade report.
+
+def chart_marketcap(t: pd.DataFrame, outdir: Path) -> Path:
+    """Contribution by market-cap band."""
+    if t is None or t.empty:
+        return None
+    t = t.sort_values("contrib_bps")
+    fig, ax = plt.subplots(figsize=(10.0, 3.6))
+    ys = np.arange(len(t))
+    vals = t["contrib_bps"].values
+    ax.barh(ys, vals, height=0.55, color=_sign_colors(vals), zorder=3)
+    ax.set_yticks(ys, [f"{i}\n{r.weight_pct:.0f}% of value · {r.bps:+.1f} bps"
+                       for i, r in t.iterrows()], fontsize=9.5)
+    _hbar_labels(ax, ys, vals, fmt="{:+.2f}")
+    _zero_line(ax)
+    span = float(np.nanmax(np.abs(vals))) if len(vals) else 1.0
+    ax.set_xlim(min(-span * 0.5, float(np.nanmin(vals)) * 1.6), span * 1.6)
+    _finish(ax, "Contribution by market cap",
+            xlabel="contribution to the total (bps)")
+    return _save(fig, "03c_marketcap", outdir)
+
+
+def analyse_report_only() -> dict:
+    """Everything the simple deck needs, from the report tables alone."""
+    log("")
+    log("-" * 74)
+    log("ANALYSIS  (published report figures only - no order file)")
+    log("-" * 74)
+    tot = REPORT.get("totals") or {}
+    if not tot:
+        sys.exit("FATAL - this client has no published totals in CLIENTS, so "
+                 "--simple has nothing to build from.")
+
+    hl = headline_from_report(tot)
+    country = table_from_report(REPORT.get("country"), "market", tot.get("bps"))
+    hl["markets"] = int(len(country)) if not country.empty else np.nan
+    hl["symbols"] = np.nan
+    seg_total = (VENUE_SEGMENTS_REPORT or {}).get("TOTAL", {})
+    hl["dark_share"] = float(seg_total.get("Dark", np.nan))
+    hl["dark_order_share"] = np.nan
+    hl["dark_share_eligible"] = np.nan
+
+    ctx = {
+        "df": pd.DataFrame(),
+        "headline": hl,
+        "algo_table": algo_table_from_report(ALGO_REPORT, ALGOS_STUDIED),
+        "market_table": country,
+        "adv_table": table_from_report(REPORT.get("adv"), "order size",
+                                       tot.get("bps")),
+        "cap_table": table_from_report(REPORT.get("marketcap"), "market cap",
+                                       tot.get("bps")),
+        "side_table": table_from_report(REPORT.get("side"), "side",
+                                        tot.get("bps")),
+        "industry": INDUSTRY_REPORT,
+        "dark_markets": list(DARK_MARKETS or []),
+    }
+    log(f"  {hl['orders']:,} orders · {f_money(hl['notional'], 1)} · "
+        f"{f_bps(hl['bps'])} bps · {hl['markets']} markets")
+    return ctx
+
+
+def make_simple_charts(ctx: dict, outdir: Path) -> dict:
+    log("")
+    log("-" * 74)
+    log("CHARTS")
+    log("-" * 74)
+    apply_style()
+    hl = ctx["headline"]
+    c = {}
+    if not ctx["algo_table"].empty:
+        c["algo"] = chart_algo(ctx["algo_table"], outdir, hl)
+    if not ctx["market_table"].empty:
+        c["notional"] = chart_notional_by_country(
+            pd.DataFrame(), outdir, ctx.get("dark_markets"),
+            report=ctx["market_table"])
+        c["attribution"] = chart_attribution(ctx["market_table"], outdir,
+                                             by="market", total_bps=hl["bps"])
+    if ctx["industry"]:
+        c["industry"] = chart_industry(ctx["industry"], outdir, hl["bps"])
+    if not ctx["adv_table"].empty:
+        c["adv"] = chart_adv(ctx["adv_table"], outdir)
+    if not ctx["cap_table"].empty:
+        c["cap"] = chart_marketcap(ctx["cap_table"], outdir)
+    c["venue"] = chart_venue(outdir)
+    ctx["charts"] = c
+    return c
+
+
+def build_simple_narrative(ctx: dict) -> dict:
+    """Findings and advice, derived from the published tables."""
+    hl = ctx["headline"]
+    algo = ctx["algo_table"]
+    mkt = ctx["market_table"]
+    adv = ctx["adv_table"]
+    cap = ctx["cap_table"]
+    ind = pd.DataFrame(ctx["industry"] or [],
+                       columns=["name", "issues", "weight_pct", "bps",
+                                "contrib_bps"]).set_index("name")
+    seg = VENUE_SEGMENTS_REPORT or {}
+    ahead = np.isfinite(hl["bps"]) and hl["bps"] >= 0
+    n = {"findings": [], "recs": [], "notes": []}
+
+    n["findings"].append(
+        (f"You are **{f_bps(hl['bps'])} bps ahead** of benchmark over the "
+         f"period, worth about **{f_money(abs(hl['pnl_ccy']))}**."
+         if ahead else
+         f"You are **{f_bps(hl['bps'])} bps behind** benchmark over the "
+         f"period, which cost about **{f_money(abs(hl['pnl_ccy']))}**."))
+
+    # which algo drives it
+    if not algo.empty:
+        big = algo[algo["n"] >= MIN_N_QUOTABLE]
+        if not big.empty:
+            k = big["contrib_bps"].idxmax() if ahead else big["contrib_bps"].idxmin()
+            r = big.loc[k]
+            n["findings"].append(
+                f"**{k}** is {r['weight_pct']:.0f}% of your volume at "
+                f"{f_bps(r['bps'])} bps — that is where the result is made.")
+        zero = algo[algo["bps"].abs() < 1e-9]
+        for k in zero.index:
+            n["notes"].append(
+                f"{k} is measured against the close and executes in the "
+                f"closing auction, so it scores exactly 0.0 by construction. "
+                f"That is {algo.loc[k, 'weight_pct']:.0f}% of your value we "
+                "cannot rank on this benchmark — arrival would tell us more.")
+
+    # markets
+    if not mkt.empty:
+        good = mkt[mkt["contrib_bps"] > 0].sort_values("contrib_bps",
+                                                       ascending=False)
+        bad = mkt[mkt["contrib_bps"] < 0].sort_values("contrib_bps")
+        if len(good):
+            r = good.iloc[0]
+            if ahead:
+                # a positive book: the top contributor IS the result
+                share = 100 * r["contrib_bps"] / hl["bps"] if hl["bps"] else np.nan
+                n["findings"].append(
+                    f"**{good.index[0]}** does the heavy lifting: "
+                    f"{r['weight_pct']:.0f}% of value at {f_bps(r['bps'])} bps, "
+                    f"adding **{r['contrib_bps']:+.1f} bps**"
+                    + (f" — {abs(share):.0f}% of the whole result."
+                       if np.isfinite(share) else "."))
+            else:
+                # a negative book: framing it as "the result" would be wrong
+                n["findings"].append(
+                    f"**{good.index[0]}** is the one bright spot: "
+                    f"{f_bps(r['bps'])} bps on {r['weight_pct']:.0f}% of value, "
+                    f"adding **{r['contrib_bps']:+.1f} bps** back.")
+        if len(bad):
+            r = bad.iloc[0]
+            worst2 = ", ".join(bad.head(2).index)
+            n["findings"].append(
+                f"**{worst2}** are where you lose: {bad.index[0]} runs "
+                f"{f_bps(r['bps'])} bps on {r['weight_pct']:.0f}% of value.")
+            prize = abs(r["bps"]) * r["notional_m"] * 1e6 / 1e4
+            n["recs"].append(
+                f"**Start with {bad.index[0]}.** Bringing it back to flat is "
+                f"worth about {f_money(prize)}. It is the single clearest "
+                "place to look.")
+
+    # industry
+    if not ind.empty:
+        b = ind["contrib_bps"].idxmax()
+        w = ind["contrib_bps"].idxmin()
+        if ind.loc[w, "contrib_bps"] < 0:
+            n["findings"].append(
+                f"By sector, **{b}** is your best ({ind.loc[b, 'bps']:+.1f} bps) "
+                f"and **{w}** your worst ({ind.loc[w, 'bps']:+.1f} bps on "
+                f"{ind.loc[w, 'weight_pct']:.0f}% of value).")
+            n["recs"].append(
+                f"**Look at {w} and {bad.index[0] if not mkt.empty and len(bad) else 'your weakest market'} together.** "
+                "They are likely the same orders seen two ways; if so there is "
+                "one problem to fix here, not two.")
+
+    # order size
+    # bands with a handful of orders are noise - do not crown them "best"
+    adv_q = adv[adv["n"] >= 20] if not adv.empty else adv
+    if len(adv_q) >= 2:
+        adv = adv_q
+        best = adv["bps"].idxmax()
+        worst = adv["bps"].idxmin()
+        first = adv.index[0]
+        if worst == first:
+            n["findings"].append(
+                f"**Your smallest orders do worst.** The {first} band returns "
+                f"{f_bps(adv.loc[first, 'bps'])} bps against "
+                f"{f_bps(adv.loc[best, 'bps'])} for {best}, and it is "
+                f"{adv.loc[first, 'weight_pct']:.0f}% of everything you trade.")
+            n["recs"].append(
+                f"**Slow the small orders down.** The {first} band is most of "
+                "your value and your weakest result. More time and more "
+                "posting on that flow is the biggest single saving available.")
+        else:
+            n["findings"].append(
+                f"By size, best on **{best}** ({f_bps(adv.loc[best, 'bps'])}) "
+                f"and weakest on **{worst}** ({f_bps(adv.loc[worst, 'bps'])}).")
+
+    # market cap
+    cap_q = cap[cap["n"] >= 20] if not cap.empty else cap
+    if not cap_q.empty:
+        cap = cap_q
+        w = cap["bps"].idxmin()
+        if cap.loc[w, "bps"] < 0:
+            n["findings"].append(
+                f"**{w}** is the only cap band losing money "
+                f"({cap.loc[w, 'bps']:+.1f} bps on "
+                f"{cap.loc[w, 'weight_pct']:.0f}% of value) — and at "
+                f"{cap.loc[w, 'adv_pct']:.1f}% ADV these are the easiest names "
+                "you trade.")
+
+    # venue / dark - one observation, not a section
+    rows = {a: v for a, v in seg.items() if a != "TOTAL"}
+    if rows:
+        dark_tot = seg.get("TOTAL", {}).get("Dark", 0)
+        best_dark = max(rows, key=lambda a: rows[a].get("Dark", 0))
+        no_dark = [a for a in rows if rows[a].get("Dark", 0) < 1]
+        if dark_tot >= 5:
+            n["findings"].append(
+                f"**{dark_tot:.0f}% of your volume trades in dark**, almost all "
+                f"of it through {best_dark} ({rows[best_dark]['Dark']:.0f}%).")
+            if no_dark:
+                takers = [a for a in no_dark
+                          if rows[a].get("Visible Take", 0) >= 50]
+                if takers:
+                    n["recs"].append(
+                        f"**Let {', '.join(takers)} use dark too.** "
+                        f"{takers[0]} crosses the spread on "
+                        f"{rows[takers[0]]['Visible Take']:.0f}% of its volume "
+                        "and never tries the midpoint. It is the easiest "
+                        "change on this list.")
+        else:
+            taker = max(rows, key=lambda a: rows[a].get("Visible Take", 0))
+            n["findings"].append(
+                f"Only **{dark_tot:.1f}%** of your volume trades in dark, so "
+                "venue is not where your result is being decided.")
+            if rows[taker].get("Visible Take", 0) >= 20:
+                n["recs"].append(
+                    f"**Get {taker} posting more and taking less.** It crosses "
+                    f"the spread on {rows[taker]['Visible Take']:.0f}% of its "
+                    f"volume; at a {hl['spread_bps']:.1f} bps spread that is "
+                    f"about {hl['spread_bps']/2:.1f} bps given away each time.")
+        auc = max(rows, key=lambda a: rows[a].get("Auction", 0))
+        if rows[auc].get("Auction", 0) >= 50:
+            n["notes"].append(
+                f"{auc} puts {rows[auc]['Auction']:.0f}% of its volume into the "
+                "closing auction, so its result is really about where the "
+                "close printed rather than how the order was worked.")
+
+    n["notes"].append(
+        "Every figure in this pack is taken from the published post-trade "
+        "report for the period, so it reconciles with your own numbers.")
+    return n
+
+
+# --- slides ----------------------------------------------------------------
+def s_cover(prs, ctx):
+    s = new_slide(prs)
+    hl = ctx["headline"]
+    band = s.shapes.add_shape(1, Inches(0), Inches(0), SLIDE_W, Inches(2.45))
+    band.fill.solid(); band.fill.fore_color.rgb = T_HEAD
+    band.line.fill.background(); band.shadow.inherit = False
+
+    box = s.shapes.add_textbox(MARGIN, Inches(0.66), Inches(11.5), Inches(1.5))
+    tf = box.text_frame; tf.word_wrap = True
+    _run(tf.paragraphs[0], "Transaction Cost Analysis", size=38, bold=True,
+         color=T_WHITE)
+    p2 = tf.add_paragraph()
+    _run(p2, f"{CLIENT_NAME}  ·  {PERIOD_LABEL}", size=17, color=T_WHITE)
+
+    ahead = np.isfinite(hl["bps"]) and hl["bps"] >= 0
+    cards = [
+        (f"{hl['orders']:,}", "orders", T_HEAD),
+        (f_money(hl["notional"], 1), "executed", T_HEAD),
+        (f_bps(hl["bps"]) + " bps", "vs benchmark", T_SAVE if ahead else T_COST),
+        (f_money(abs(hl["pnl_ccy"])), "saved" if ahead else "cost",
+         T_SAVE if ahead else T_COST),
+        (f"{hl['markets']:.0f}", "markets", T_HEAD),
+    ]
+    w, gap = Inches(2.34), Inches(0.10)
+    left = MARGIN
+    for big, cap_, fill in cards:
+        kpi(s, left, Inches(2.85), w, Inches(1.15), big, cap_, fill=fill,
+            big_size=22 if len(big) <= 10 else 17)
+        left += w + gap
+
+    lines = []
+    if np.isfinite(hl.get("spread_bps", np.nan)):
+        lines.append(f"Average spread **{hl['spread_bps']:.1f} bps**, typical "
+                     f"order **{hl['adv_pct']:.1f}%** of the day's volume.")
+    if np.isfinite(hl.get("dark_share", np.nan)):
+        lines.append(f"**{hl['dark_share']:.1f}%** of volume traded in dark.")
+    lines.append("All figures are taken from your published post-trade report "
+                 "for the period.")
+    bullets(s, lines, MARGIN, Inches(4.35), Inches(11.9), Inches(1.5), size=12.5)
+    note(s, "A plus means you beat the benchmark and saved money. A minus means "
+            "it cost you.")
+    footer(s)
+
+
+def s_summary(prs, ctx, nar):
+    s = new_slide(prs)
+    hl = ctx["headline"]
+    title(s, "Summary")
+    ahead = hl["bps"] >= 0
+    strapline(s, (f"{f_bps(hl['bps'])} bps "
+                  + ("ahead of" if ahead else "behind")
+                  + f" benchmark ({f_money(abs(hl['pnl_ccy']))}). "
+                  + "Here is what drove it and what we would change."))
+
+    box = s.shapes.add_textbox(MARGIN, Inches(1.62), Inches(6.25), Inches(0.32))
+    _run(box.text_frame.paragraphs[0], "WHAT WE SEE", size=11, bold=True,
+         color=T_HEAD)
+    bullets(s, nar["findings"][:6], MARGIN, Inches(1.98), Inches(6.25),
+            Inches(4.0), size=11)
+
+    x2 = Inches(7.15)
+    box = s.shapes.add_textbox(x2, Inches(1.62), Inches(5.55), Inches(0.32))
+    _run(box.text_frame.paragraphs[0], "WHAT WE ADVISE", size=11, bold=True,
+         color=T_HEAD)
+    bullets(s, nar["recs"][:4], x2, Inches(1.98), Inches(5.55), Inches(4.0),
+            size=11)
+    footer(s)
+
+
+def s_algo(prs, ctx):
+    s = new_slide(prs)
+    title(s, "By Algorithm")
+    strapline(s, "Which tools you use, and how each performs against its own "
+                 "benchmark.")
+    picture(s, ctx["charts"].get("algo"), MARGIN, Inches(1.55),
+            width=Inches(7.4))
+    algo = ctx["algo_table"]
+    if not algo.empty:
+        data = [["Algo", "Orders", "% value", "Spread", "bps", "Contrib"]]
+        colored, thin = {}, False
+        for i, (idx, r) in enumerate(algo.iterrows(), start=1):
+            tag = ""
+            if r["n"] < MIN_N_QUOTABLE:
+                tag, thin = " *", True
+            data.append([f"{idx}{tag}", f"{int(r['n']):,}",
+                         f"{r['weight_pct']:.1f}%",
+                         f"{r['spread_bps']:.1f}",
+                         f_bps(r["bps"]), f_bps(r["contrib_bps"], 2)])
+            colored[(i, 4)] = "save" if r["bps"] >= 0 else "cost"
+            colored[(i, 5)] = "save" if r["contrib_bps"] >= 0 else "cost"
+        table(s, data, Inches(8.15), Inches(1.70), Inches(4.6),
+              row_h=Inches(0.30), colored=colored)
+        y = Inches(1.74) + Inches(0.30) * len(data)
+        if thin:
+            box = s.shapes.add_textbox(Inches(8.15), y, Inches(4.6), Inches(0.3))
+            _run(box.text_frame.paragraphs[0],
+                 f"* under {MIN_N_QUOTABLE} orders — not a reliable number",
+                 size=8, color=T_MUTED)
+            y = y + Inches(0.30)
+        zero = algo[algo["bps"].abs() < 1e-9]
+        if len(zero):
+            box = s.shapes.add_textbox(Inches(8.15), y + Inches(0.15),
+                                       Inches(4.6), Inches(1.6))
+            tf = box.text_frame; tf.word_wrap = True
+            _run(tf.paragraphs[0],
+                 f"{', '.join(zero.index)} executes in the closing auction and "
+                 "is measured against the close, so it scores exactly zero on "
+                 "every order. That is arithmetic, not performance — to judge "
+                 "it we would need to measure it against arrival instead.",
+                 size=9.5, color=T_MUTED)
+    footer(s)
+
+
+def s_market(prs, ctx, nar):
+    s = new_slide(prs)
+    title(s, "By Market")
+    strapline(s, "A market only moves your total if it is both good or bad AND "
+                 "big.")
+    picture(s, ctx["charts"].get("attribution"), MARGIN, Inches(1.52),
+            width=Inches(7.5))
+    lines = [l for l in nar["findings"]
+             if "heavy lifting" in l or "where you lose" in l]
+    mkt = ctx["market_table"]
+    if not mkt.empty:
+        top3 = mkt.nlargest(3, "notional_m")
+        lines.append("Your three biggest markets — **"
+                     + "**, **".join(top3.index)
+                     + f"** — are {top3['weight_pct'].sum():.0f}% of everything "
+                       "you trade.")
+    bullets(s, lines, Inches(8.20), Inches(1.72), Inches(4.55), Inches(4.3),
+            size=11)
+    footer(s)
+
+
+def s_industry(prs, ctx, nar):
+    if not ctx["charts"].get("industry"):
+        return
+    s = new_slide(prs)
+    title(s, "By Industry")
+    strapline(s, "The same result, cut by sector.")
+    picture(s, ctx["charts"]["industry"], MARGIN, Inches(1.52),
+            width=Inches(7.3))
+    lines = [l for l in nar["findings"] if "By sector" in l]
+    lines.append("Read this against the market view. If the same names keep "
+                 "appearing in both, the issue is the stock rather than the "
+                 "country or the venue.")
+    bullets(s, lines, Inches(8.05), Inches(1.72), Inches(4.7), Inches(4.3),
+            size=11)
+    note(s, "Sector figures are taken from the published industry breakdown.")
+    footer(s)
+
+
+def s_size(prs, ctx, nar):
+    s = new_slide(prs)
+    title(s, "By Order Size")
+    strapline(s, "How you do on small orders versus large ones.")
+    # the two charts share the slide: order size on the left, market cap
+    # tucked under the commentary on the right
+    picture(s, ctx["charts"].get("adv"), MARGIN, Inches(1.52),
+            width=Inches(7.1))
+    lines = [l for l in nar["findings"]
+             if "smallest orders" in l or "By size" in l
+             or "only cap band" in l]
+    bullets(s, lines, Inches(8.05), Inches(1.72), Inches(4.7), Inches(2.2),
+            size=10.5)
+    picture(s, ctx["charts"].get("cap"), Inches(8.05), Inches(4.20),
+            width=Inches(4.75))
+    footer(s)
+
+
+def s_venue(prs, ctx, nar):
+    s = new_slide(prs)
+    hl = ctx["headline"]
+    title(s, "Where Your Volume Executes")
+    dark = hl.get("dark_share", np.nan)
+    strapline(s, (f"{dark:.0f}% of volume trades in dark."
+                  if np.isfinite(dark) and dark >= 5
+                  else "Auction, passive posting, or crossing the spread."))
+    picture(s, ctx["charts"].get("venue"), MARGIN, Inches(1.55),
+            width=Inches(7.5))
+    seg = VENUE_SEGMENTS_REPORT or {}
+    lines = []
+    for a in [x for x in ALGO_ORDER if x in seg] or \
+             [x for x in seg if x != "TOTAL"]:
+        parts = []
+        for k, lbl in [("Auction", "auction"), ("Visible Post", "posted"),
+                       ("Visible Take", "crossing the spread"),
+                       ("Dark", "dark")]:
+            v = seg[a].get(k, 0)
+            if v >= 5:
+                parts.append(f"**{v:.0f}%** {lbl}")
+        if parts:
+            lines.append(f"**{a}** — " + ", ".join(parts) + ".")
+    lines += [r for r in nar["recs"] if "dark too" in r or "posting more" in r]
+    bullets(s, lines, Inches(8.20), Inches(1.72), Inches(4.55), Inches(4.3),
+            size=10.5)
+    note(s, "Venue split is taken from the published venue segment breakdown, "
+            "as a % of executed value.")
+    footer(s)
+
+
+def s_advice(prs, ctx, nar):
+    s = new_slide(prs)
+    title(s, "What We Would Change")
+    strapline(s, "Biggest win first.")
+    for i, r in enumerate(nar["recs"][:4]):
+        y = Inches(1.62 + i * 1.06)
+        num = s.shapes.add_shape(1, MARGIN, y, Inches(0.44), Inches(0.44))
+        num.fill.solid(); num.fill.fore_color.rgb = T_HEAD
+        num.line.fill.background(); num.shadow.inherit = False
+        tf = num.text_frame; tf.margin_top = Inches(0.02)
+        tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        _run(tf.paragraphs[0], str(i + 1), size=15, bold=True, color=T_WHITE)
+        bullets(s, [r], Inches(1.22), y - Inches(0.05), Inches(11.4),
+                Inches(0.95), size=12, marker="")
+
+    if nar["notes"]:
+        box = s.shapes.add_textbox(MARGIN, Inches(5.95), Inches(12.1),
+                                   Inches(0.3))
+        _run(box.text_frame.paragraphs[0], "WORTH KNOWING", size=10, bold=True,
+             color=T_MUTED)
+        bullets(s, ["~" + x for x in nar["notes"][:3]], MARGIN, Inches(6.25),
+                Inches(12.1), Inches(0.8), size=9, gap=2)
+    footer(s)
+
+
+def build_simple_deck(ctx: dict, nar: dict, out: Path) -> Path:
+    _PAGE[0] = 0
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
+    s_cover(prs, ctx)
+    s_summary(prs, ctx, nar)
+    s_algo(prs, ctx)
+    s_market(prs, ctx, nar)
+    s_industry(prs, ctx, nar)
+    s_size(prs, ctx, nar)
+    s_venue(prs, ctx, nar)
+    s_advice(prs, ctx, nar)
+    prs.save(str(out))
+    log(f"  saved {out.name}  ({len(prs.slides._sldIdLst)} slides)")
+    return out
+
+
 # ===========================================================================
 # 11. ORCHESTRATION
 # ===========================================================================
@@ -3288,6 +3793,14 @@ def make_charts(ctx: dict, outdir: Path) -> dict:
 
 
 def write_tables(ctx: dict, path: Path) -> None:
+    # --simple passes a ready-made {sheet: frame} mapping
+    if "headline" in ctx and "algo_table" not in ctx:
+        with pd.ExcelWriter(path, engine="openpyxl") as xl:
+            for name, t in ctx.items():
+                if t is not None and hasattr(t, "empty") and not t.empty:
+                    t.to_excel(xl, sheet_name=name[:31])
+        log(f"  saved {path.name}")
+        return
     sheets = {
         "headline": pd.DataFrame([ctx["headline"]]).T.rename(columns={0: "value"}),
         "by_algo": ctx["algo_table"],
@@ -3416,6 +3929,9 @@ def main(argv=None) -> int:
                     help="output directory (default: <client>/output)")
     ap.add_argument("--probe", action="store_true",
                     help="inspect the data file and stop - no charts, no deck")
+    ap.add_argument("--simple", action="store_true",
+                    help="short client deck from the published report figures "
+                         "only - no order file needed")
     ap.add_argument("--sample", action="store_true",
                     help="generate synthetic KIC-shaped data and run on it")
     ap.add_argument("--header-row", type=int, default=None,
@@ -3455,6 +3971,29 @@ def main(argv=None) -> int:
     log(f"{CLIENT_NAME} TCA" + (f"  —  {PERIOD_LABEL}" if PERIOD_LABEL else ""))
     log("=" * 74)
 
+    if args.simple:
+        ctx = analyse_report_only()
+        make_simple_charts(ctx, charts_dir)
+        nar = build_simple_narrative(ctx)
+        log("")
+        log("-" * 74)
+        log("DECK")
+        log("-" * 74)
+        build_simple_deck(ctx, nar, out / f"{CLIENT_NAME}_TCA.pptx")
+        write_tables({"headline": pd.DataFrame([ctx["headline"]]).T
+                      .rename(columns={0: "value"}),
+                      "by_algo": ctx["algo_table"],
+                      "by_market": ctx["market_table"],
+                      "by_adv_bucket": ctx["adv_table"],
+                      "by_market_cap": ctx["cap_table"],
+                      "by_side": ctx["side_table"]}, out / "tables.xlsx")
+        (out / "run_log.txt").write_text("\n".join(LOG), encoding="utf-8")
+        log("")
+        log("Done. Everything is in " + str(out.resolve()))
+        log("  Every figure comes from the published report - no order file "
+            "was read.")
+        return 0
+
     if args.sample:
         IS_SAMPLE[0] = True
         data_path = out / f"sample_{CLIENT_NAME}_orders.xlsx"
@@ -3463,8 +4002,9 @@ def main(argv=None) -> int:
         data_path = args.data
         if not data_path.exists():
             sys.exit(f"FATAL — file not found: {data_path}")
-    else:
-        ap.error("give --data PATH, or --sample to generate test data")
+    elif not args.simple:
+        ap.error("give --data PATH, --simple for the report-only deck, or "
+                 "--sample to generate test data")
 
     if args.probe:
         return probe(data_path)

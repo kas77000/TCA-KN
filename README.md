@@ -18,6 +18,23 @@ Output lands in `<client>/output`:
 | `dark_regression.txt` | full regression output (KIC only) |
 | `run_log.txt` | sanity report + reference check |
 
+## The client deck
+
+```bash
+python tca_deck.py --client KIC --simple
+python tca_deck.py --client NPS --simple
+```
+
+Eight slides, built **entirely from the published report figures** in `CLIENTS`
+— no order file is read, so nothing on any slide can be synthetic. Cover and
+KPIs · summary · by algorithm · by market · by industry · by order size ·
+where volume executes · what we would change.
+
+Output: `<client>/output/<CLIENT>_TCA.pptx`, plus every chart as a standalone
+PNG and `tables.xlsx`.
+
+The longer deck (`--data`) adds the order-level dark analysis on top of this.
+
 ## Run this first
 
 Before building anything, on the target machine:
