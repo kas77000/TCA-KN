@@ -78,27 +78,35 @@ not advice. That slide becomes **"How Your Algos Execute"** instead: IIS puts
 Blue = saving, red = cost, everywhere. If an export ever uses the opposite sign,
 set `POSITIVE_IS_SAVING = False` — the reference check will tell you.
 
-## Report-sourced tables
+## Where each number comes from
 
-Three tables are taken from each client's report and live in `CLIENTS`:
+**The published report is the truth for every aggregate.** The order file is
+used only for what the report cannot express.
 
-- **venue segmentation** (auction / post / take / dark) — *cannot* be computed;
-  the order file carries the dark share only
-- **industry breakdown** — *cannot* be computed; there is no sector column
-- **algo performance** — *could* be computed, but is taken from the report so all
-  three exhibits agree and the deck shows published figures rather than whatever
-  a mis-mapped column produced
+| Exhibit | Source |
+|---|---|
+| Headline KPIs, algo, country, market cap, order size, side, industry, venue | **report** (`CLIENTS`) |
+| Dark: no-dark vs any-dark, controlled splits, availability by market, regression | order file |
+| Worst orders by money | order file |
+| Benchmark matrix (all four benchmarks) | order file |
 
-Update all three when the period changes.
+Two of the report tables *cannot* be derived at all — there is no sector column,
+and the order file carries only the dark share, not the auction/post/take split.
+The rest could be derived, but aren't: taking them from the report means every
+exhibit agrees with what the client already holds, and the deck is correct even
+before anyone has run the order file.
 
-Because the algo table is published rather than derived, the recomputation
-becomes a **per-algo reconciliation**: every run compares orders, notional and
-bps for each algo against the report and flags any gap. A total that reconciles
-while one algo is wrong — two errors cancelling — no longer slips through. Both
-views land in `tables.xlsx` as `by_algo` and `by_algo_computed`, with the
-differences in `algo_reconciliation`.
+Every report table is typed in by hand, so each is checked on load: weights must
+sum to 100 and contributions must sum to the published headline. A transcription
+slip is reported at the top of the run, not discovered in a client meeting.
 
-Everything else is computed from the order file.
+The recomputation is not wasted — it becomes a **per-algo reconciliation**.
+Every run compares orders, notional and bps for each algo against the report and
+flags any gap. A total that reconciles while one algo is wrong — two errors
+cancelling — no longer slips through. Both views land in `tables.xlsx` as
+`by_algo` and `by_algo_computed`, with the differences in `algo_reconciliation`.
+
+Update the report tables in `CLIENTS` when the period changes.
 
 ## If the columns don't match
 

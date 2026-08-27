@@ -110,6 +110,46 @@ CLIENTS = {
             ("IIS",   774,  46_460_964,  9.2, 0.7, 1.2, 8.4, "Day Close Prm",  0.0, 0.0),
             ("PROG",   30,   1_217_989,  0.2, 0.6, 0.1, 20.8, "Arrival Price", 119.6, 0.3),
         ],
+        # ---------------------------------------------------------------
+        # Report tables. Every row is the same 10-tuple:
+        #   (name, orders, shares, exec_value, weight_pct, period_part,
+        #    adv_pct, spread_bps, bps, contrib_bps)
+        # period_part is None where the report does not carry that column.
+        # ---------------------------------------------------------------
+        "totals": {"orders": 2074, "shares": 234_817_014,
+                   "notional": 505_182_392, "period_part": 1.9, "adv_pct": 1.4,
+                   "spread_bps": 8.6, "bps": 6.2, "pnl_ccy": 313_500},
+        "country": [
+            ("Japan",         235,   9_693_103, 160_058_861, 31.7, None, 1.4,  3.6,  -1.3, -0.4),
+            ("Hong Kong",     434,  73_978_891, 136_664_201, 27.1, None, 1.3, 10.6,  14.7,  4.0),
+            ("Taiwan",        166,  16_659_534,  75_970_221, 15.0, None, 1.0, 15.4,   9.5,  1.4),
+            ("India",         486,  11_331_565,  68_224_945, 13.5, None, 1.8,  3.8,  -4.4, -0.6),
+            ("Stock Connect", 535,  10_784_768,  32_910_676,  6.5, None, 0.3,  4.2,   0.9,  0.1),
+            ("Indonesia",      58, 102_291_655,  16_648_022,  3.3, None, 4.5, 26.1,  31.0,  1.0),
+            ("Malaysia",       63,   6_244_399,   6_071_868,  1.2, None, 2.8, 26.7,  62.5,  0.7),
+            ("Thailand",       42,   2_725_457,   3_808_854,  0.8, None, 0.5, 33.7, -19.9, -0.2),
+            ("Australia",      18,     166_073,   2_008_070,  0.4, None, 0.1,  5.8,  -0.8, -0.0),
+            ("Philippines",    24,     722_805,   1_338_151,  0.3, None, 2.8,  7.4,  55.2,  0.1),
+            ("Singapore",       9,     128_600,     971_684,  0.2, None, 0.2,  9.7,   0.6,  0.0),
+            ("New Zealand",     4,      90_164,     506_838,  0.1, None, 2.2, 18.3,  -2.2, -0.0),
+        ],
+        "marketcap": [
+            ("Large $10-100B", 1277, 119_676_862, 324_093_275, 64.2, None, 1.1,  8.2,  7.7,  4.9),
+            ("Mid $2-10B",      609,  98_903_018, 108_411_582, 21.5, None, 3.0, 11.2,  6.2,  1.3),
+            ("Mega >$100B",     183,  14_243_091,  72_027_046, 14.3, None, 0.3,  6.7, -0.4, -0.1),
+            ("Small $0.3-2B",     5,   1_994_043,     650_489,  0.1, None, 0.6, 10.1, 10.1,  0.0),
+        ],
+        "adv": [
+            ("0-1%",    1831, 81_682_459, 280_901_115, 56.0, 1.0,  0.4,  7.9,  5.6, 3.1),
+            ("1-3%",     180, 85_477_868, 155_316_114, 31.0, 2.5,  1.7,  8.8,  2.7, 0.8),
+            ("3-5%",      42, 38_619_623,  44_481_654,  9.0, 3.6,  4.1, 10.8, 19.7, 1.7),
+            ("5-10%",     18, 25_985_264,  22_578_625,  4.0, 5.9,  5.9, 11.6,  9.7, 0.4),
+            ("10-25%",     3,  3_051_800,   1_904_883,  0.0, 11.7, 15.7, 11.6, 25.0, 0.1),
+        ],
+        "side": [
+            ("BUY",  1365, 113_356_784, 269_638_873, 53.4, 1.8, 1.3, 8.7, 8.4, 4.5),
+            ("SELL",  709, 121_460_230, 235_543_520, 46.6, 2.0, 1.5, 8.6, 3.7, 1.7),
+        ],
         # industry: (name, issues, %weight, impact bps, weighted impact bps)
         "industry": [
             ("Consumer Non-cyclical", 141,  9.4,   8.6,  0.8),
@@ -153,6 +193,43 @@ CLIENTS = {
             ("PROG",   14,   1_375_612,  0.1, 0.5, 0.4, 12.3, "Arrival Price", 100.3,  0.1),
             ("SDMA",    3,     370_068,  0.0, 0.6, 0.1, 21.2, "Arrival Price", -41.5, -0.0),
         ],
+        # ---------------------------------------------------------------
+        # Report tables. Every row is the same 10-tuple:
+        #   (name, orders, shares, exec_value, weight_pct, period_part,
+        #    adv_pct, spread_bps, bps, contrib_bps)
+        # period_part is None where the report does not carry that column.
+        # ---------------------------------------------------------------
+        "totals": {"orders": 4052, "shares": 87_472_636,
+                   "notional": 1_094_845_761, "period_part": 2.4, "adv_pct": 1.7,
+                   "spread_bps": 4.4, "bps": -1.4, "pnl_ccy": -153_278},
+        "country": [
+            ("Japan",        2061, 37_115_601, 755_028_595, 69.0, None, 1.8,  3.5,  -1.1, -0.7),
+            ("Australia",     497,  7_639_685, 135_661_180, 12.4, None, 2.0,  4.1,  -0.7, -0.1),
+            ("Hong Kong",     535, 13_774_357,  72_057_394,  6.6, None, 0.8,  6.8,  -1.8, -0.1),
+            ("India",         298, 10_913_335,  63_476_005,  5.8, None, 2.4,  4.2,   1.5,  0.1),
+            ("Taiwan",        235,  6_169_000,  36_650_859,  3.3, None, 0.2, 14.5, -11.3, -0.4),
+            ("Singapore",     168,  3_240_432,  21_504_716,  2.0, None, 0.9, 10.3,  -9.2, -0.2),
+            ("Stock Connect", 150,  2_071_016,   4_897_573,  0.4, None, 0.0,  5.7,   1.6,  0.0),
+            ("Malaysia",       59,  1_609_500,   3_260_927,  0.3, None, 1.6, 17.4,  -0.0, -0.0),
+            ("Indonesia",      27,  4_665_600,   1_127_942,  0.1, None, 0.4, 22.2,  -4.9, -0.0),
+            ("New Zealand",    10,    123_253,     872_356,  0.1, None, 2.2, 15.9,  -2.8, -0.0),
+            ("Philippines",    11,    150_250,     270_107,  0.0, None, 0.5,  6.7,  -0.9, -0.0),
+            ("USA",             1,        607,      38_107,  0.0, None, 0.2,  4.6,   2.2,  0.0),
+        ],
+        "marketcap": [
+            ("Large $10-100B", 3072, 65_894_658, 771_943_372, 70.5, None, 2.0, 4.4,  0.1,  0.1),
+            ("Mega >$100B",     498, 10_732_155, 262_458_438, 24.0, None, 0.4, 4.1, -5.9, -1.4),
+            ("Mid $2-10B",      482, 10_845_823,  60_443_952,  5.5, None, 4.0, 6.6, -1.5, -0.1),
+        ],
+        "adv": [
+            ("0-1%",   3822, 60_286_511, 683_670_707, 62.0,  0.6,  0.3, 4.6, -2.7, -1.7),
+            ("1-3%",    164, 13_720_140, 211_323_382, 19.0,  3.0,  1.8, 4.2,  0.3,  0.1),
+            ("3-5%",     33,  4_179_241,  72_143_438,  7.0,  6.6,  4.0, 4.0, -2.6, -0.2),
+            ("5-10%",    28,  8_113_156, 105_474_814, 10.0,  7.8,  6.9, 4.1,  4.8,  0.5),
+            ("10-25%",    5,  1_173_588,  22_233_421,  2.0, 14.3, 12.4, 4.0, -4.3, -0.1),
+        ],
+        "side": None,   # not captured for NPS yet
+
         "industry": [
             ("Consumer Non-cyclical",  91, 12.5,   2.8,  0.4),
             ("Utilities",              21,  2.0,  -2.8, -0.1),
@@ -184,6 +261,7 @@ ALGOS_STUDIED = None
 DARK_STORY    = True
 INDUSTRY_REPORT = None
 ALGO_REPORT     = None
+REPORT          = {}      # country / marketcap / adv / side / totals
 
 # --- Column mapping -------------------------------------------------------
 # Header names are matched case-insensitively and ignoring spaces, dots,
@@ -883,6 +961,58 @@ def _dark_share_eligible(df: pd.DataFrame) -> float:
     return float(100 * e["dark_value"].sum() / e["notional"].sum())
 
 
+REPORT_COLS = ["name", "n", "shares", "notional", "weight_pct", "period_part",
+               "adv_pct", "spread_bps", "bps", "contrib_bps"]
+
+
+def table_from_report(rows, label="", total_bps=None) -> pd.DataFrame:
+    """Turn a transcribed report table into the shape the charts expect.
+
+    These figures are typed in by hand from the report, so each one is checked
+    on load: the weights must sum to 100 and the contributions must sum to the
+    published headline. A transcription slip shows up here rather than in a
+    client deck.
+    """
+    if not rows:
+        return pd.DataFrame()
+    t = pd.DataFrame(list(rows), columns=REPORT_COLS)
+    t["notional_m"] = t["notional"] / 1e6
+    t["pnl_ccy"] = t["bps"] * t["notional"] / 1e4
+    for c in ["lo", "hi", "beat_rate", "dark_pct", "median_dur_min"]:
+        t[c] = np.nan
+    t = t.set_index("name")
+    t.index.name = label or "group"
+
+    w = float(t["weight_pct"].sum())
+    if abs(w - 100.0) > 1.5:
+        log(f"  ** CHECK {label}: weights sum to {w:.1f}%, not 100. "
+            "Re-read the transcribed table.")
+    if total_bps is not None and np.isfinite(total_bps):
+        c = float(t["contrib_bps"].sum())
+        if abs(c - total_bps) > 0.6:
+            log(f"  ** CHECK {label}: contributions sum to {c:+.2f} bps but the "
+                f"published total is {total_bps:+.2f}. Re-read the table.")
+    return t.drop(columns=["notional"]).round(3)
+
+
+def headline_from_report(tot: dict) -> dict:
+    """Headline KPIs straight off the report."""
+    d = {
+        "orders": int(tot["orders"]),
+        "notional": float(tot["notional"]),
+        "shares": float(tot.get("shares", np.nan)),
+        "bps": float(tot["bps"]),
+        "lo": np.nan, "hi": np.nan,
+        "pnl_ccy": float(tot.get("pnl_ccy",
+                                 tot["bps"] * tot["notional"] / 1e4)),
+        "beat_rate": np.nan,
+        "adv_pct": float(tot.get("adv_pct", np.nan)),
+        "spread_bps": float(tot.get("spread_bps", np.nan)),
+        "period_part": float(tot.get("period_part", np.nan)),
+    }
+    return d
+
+
 def algo_table_from_report(rows, algos=None) -> pd.DataFrame:
     """The report's algo table, shaped like the computed one.
 
@@ -1458,17 +1588,24 @@ def chart_attribution(t: pd.DataFrame, outdir: Path, by="market",
 
 # --- Exhibit 2b — executed notional by market -------------------------------
 def chart_notional_by_country(df: pd.DataFrame, outdir: Path,
-                              dark_markets: list = None) -> Path:
+                              dark_markets: list = None,
+                              report: pd.DataFrame = None) -> Path:
     """How much you actually trade, and where.
 
-    Bars are coloured by whether dark is offered in that market, which shows at
-    a glance how much of the book the dark section can even apply to.
+    Volumes come from the report where it is available. Bars are coloured by
+    whether dark is offered in that market, which shows at a glance how much of
+    the book the dark section can even apply to.
     """
-    if "market" not in df:
+    if report is not None and not report.empty:
+        g = pd.DataFrame({"n": report["n"],
+                          "notional": report["notional_m"] * 1e6})
+        g = g.sort_values("notional", ascending=False)
+    elif "market" in df:
+        g = (df.groupby("market")
+               .agg(n=("notional", "size"), notional=("notional", "sum"))
+               .sort_values("notional", ascending=False))
+    else:
         return None
-    g = (df.groupby("market")
-           .agg(n=("notional", "size"), notional=("notional", "sum"))
-           .sort_values("notional", ascending=False))
     if g.empty:
         return None
 
@@ -1499,6 +1636,10 @@ def chart_notional_by_country(df: pd.DataFrame, outdir: Path,
             loc="lower right", fontsize=9.5)
     _finish(ax, "Executed notional by market",
             xlabel=f"executed notional ({CURRENCY}m)")
+    if report is not None and not report.empty:
+        ax.text(1.0, -0.16, "Source: country breakdown.",
+                transform=ax.transAxes, fontsize=8.5, color=INK_MUTED,
+                ha="right", va="top")
     return _save(fig, "02b_notional_by_market", outdir)
 
 
@@ -2968,18 +3109,44 @@ def analyse(df: pd.DataFrame) -> dict:
     dark_algos = derive_dark_algos(df)
     dpooled = pool_small_markets(df)
 
+    rep_tot = REPORT.get("totals") or {}
+    rep_bps = rep_tot.get("bps")
+
+    # headline and every aggregate breakdown come from the report; the order
+    # file is used below only for the dark work and the outlier list
+    hl = headline_from_report(rep_tot) if rep_tot else headline(df)
+    if rep_tot and "market" in df:
+        hl["markets"] = int(df["market"].nunique())
+        hl["symbols"] = int(df["symbol"].nunique()) if "symbol" in df else np.nan
+        hl["dark_share"] = 100 * df["dark_value"].sum() / df["notional"].sum()
+        hl["dark_order_share"] = 100 * float(df["has_dark"].mean())
+        hl["dark_share_eligible"] = _dark_share_eligible(df)
+    elif rep_tot:
+        for k in ("markets", "symbols", "dark_share", "dark_order_share",
+                  "dark_share_eligible"):
+            hl.setdefault(k, np.nan)
+
     ctx = {
         "df": df,
-        "headline": headline(df),
+        "headline": hl,
         "algo_table": (algo_table_from_report(ALGO_REPORT, ALGOS_STUDIED)
                        if ALGO_REPORT
                        else group_table(df, "algo", order=ALGO_ORDER)),
         "algo_computed": group_table(df, "algo", order=ALGO_ORDER),
         "algo_reconcile": reconcile_algo(df, ALGO_REPORT),
-        "market_table": group_table(dpooled, "market_grp", min_n=1)
-        if "market_grp" in dpooled else pd.DataFrame(),
-        "adv_table": group_table(df, "adv_bucket", order=ADV_LABELS)
-        if "adv_bucket" in df else pd.DataFrame(),
+        "market_table": (table_from_report(REPORT.get("country"), "market",
+                                           rep_bps)
+                         if REPORT.get("country")
+                         else (group_table(dpooled, "market_grp", min_n=1)
+                               if "market_grp" in dpooled else pd.DataFrame())),
+        "adv_table": (table_from_report(REPORT.get("adv"), "order size",
+                                        rep_bps)
+                      if REPORT.get("adv")
+                      else (group_table(df, "adv_bucket", order=ADV_LABELS)
+                            if "adv_bucket" in df else pd.DataFrame())),
+        "cap_table": table_from_report(REPORT.get("marketcap"), "market cap",
+                                       rep_bps),
+        "side_table": table_from_report(REPORT.get("side"), "side", rep_bps),
         "benchmark_matrix": benchmark_matrix(df),
         "venue_table": venue_mix(df),
         "worst_orders": worst_orders(df),
@@ -3028,8 +3195,9 @@ def make_charts(ctx: dict, outdir: Path) -> dict:
         c["attribution"] = chart_attribution(ctx["market_table"], outdir,
                                              by="market",
                                              total_bps=hl["bps"])
-    c["notional"] = chart_notional_by_country(ctx["df"], outdir,
-                                              ctx.get("dark_markets"))
+    c["notional"] = chart_notional_by_country(
+        ctx["df"], outdir, ctx.get("dark_markets"),
+        report=ctx["market_table"] if REPORT.get("country") else None)
     if not ctx["adv_table"].empty:
         c["adv"] = chart_adv(ctx["adv_table"], outdir)
     if INDUSTRY_REPORT:
@@ -3058,6 +3226,8 @@ def write_tables(ctx: dict, path: Path) -> None:
         "algo_reconciliation": ctx.get("algo_reconcile", pd.DataFrame()),
         "by_market": ctx["market_table"],
         "by_adv_bucket": ctx["adv_table"],
+        "by_market_cap": ctx.get("cap_table", pd.DataFrame()),
+        "by_side": ctx.get("side_table", pd.DataFrame()),
         "benchmark_matrix": ctx["benchmark_matrix"],
         "venue_mix": ctx["venue_table"],
         "dark_zero_vs_any": ctx["dark_zero_vs_any"],
@@ -3157,7 +3327,7 @@ def probe(path: Path) -> int:
 def main(argv=None) -> int:
     global HEADER_ROW, SHEET, CLIENT_NAME, CLIENT_CODE, PERIOD_LABEL
     global ALGOS_STUDIED, DARK_STORY, DARK_MARKETS, VENUE_SEGMENTS_REPORT
-    global INDUSTRY_REPORT, ALGO_REPORT, REFERENCE, ALGO_ORDER
+    global INDUSTRY_REPORT, ALGO_REPORT, REPORT, REFERENCE, ALGO_ORDER
     ap = argparse.ArgumentParser(
         description="Build the client TCA deck from the order export.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -3204,6 +3374,8 @@ def main(argv=None) -> int:
     VENUE_SEGMENTS_REPORT = cfg["venue_segments"]
     INDUSTRY_REPORT = cfg["industry"]
     ALGO_REPORT     = cfg.get("algo_report")
+    REPORT          = {k: cfg.get(k) for k in
+                       ("country", "marketcap", "adv", "side", "totals")}
     REFERENCE       = cfg["reference"]
 
     out = args.out or Path(CLIENT_NAME) / "output"
