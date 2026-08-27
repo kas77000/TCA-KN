@@ -2972,10 +2972,12 @@ def probe(path: Path) -> int:
     log("")
     log("  COLUMNS PRESENT")
     for c in df_raw.columns:
-        nn = df_raw[c].notna().sum()
+        nn = int(df_raw[c].notna().sum())
+        # kept out of the f-string: a conditional spanning lines inside a
+        # replacement field only parses on Python 3.12+
+        sample = str(df_raw[c].dropna().iloc[0])[:28] if nn else "-"
         log(f"    {str(c):<24} {str(df_raw[c].dtype):<10} "
-            f"{nn:>7,} non-null  e.g. {str(df_raw[c].dropna().iloc[0])[:28]
-                                       if nn else '-'}")
+            f"{nn:>7,} non-null  e.g. {sample}")
     cols, missing = resolve_columns(df_raw)
     log("")
     log(f"  mapped {len(cols)}/{len(COLUMNS)} known fields")

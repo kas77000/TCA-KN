@@ -34,6 +34,8 @@ everything needed to confirm the mapping before a single slide is built.
 
 ## Requirements
 
+Python 3.7 or newer.
+
 ```bash
 pip install pandas numpy matplotlib python-pptx openpyxl
 pip install statsmodels     # optional: enables the dark regression
