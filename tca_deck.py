@@ -152,6 +152,21 @@ CLIENTS = {
         ],
         # (market, side, % of total value, bps) - from the country/side
         # breakdown. Market totals implied here reconcile with "country" above.
+        # (market, auction%, post%, take%, dark%) - rows sum to 100
+        "venue_country": [
+            ("Hong Kong",     13.9, 54.4,  10.4, 21.3),
+            ("Japan",         39.9, 32.9,   3.3, 23.9),
+            ("Taiwan",        29.0, 46.5,  24.5,  0.0),
+            ("India",          0.0,  0.0, 100.0,  0.0),
+            ("Stock Connect", 33.0, 57.8,   9.2,  0.0),
+            ("Indonesia",      2.6,  0.0,  97.0,  0.5),
+            ("Malaysia",       0.0,  0.0, 100.0,  0.0),
+            ("Thailand",      61.9, 19.6,  18.5,  0.0),
+            ("Philippines",   70.3, 27.3,   2.4,  0.0),
+            ("Australia",     27.6,  9.2,  51.4, 11.8),
+            ("Singapore",      0.0,  0.0, 100.0,  0.0),
+            ("New Zealand",    0.0,  0.0, 100.0,  0.0),
+        ],
         "country_side": [
             ("Hong Kong",     "BUY", 14.2,  30.2), ("Hong Kong",     "SELL", 12.8,  -2.6),
             ("Japan",         "BUY", 16.3,   0.2), ("Japan",         "SELL", 15.3,  -3.0),
@@ -245,6 +260,20 @@ CLIENTS = {
             ("10-25%",    5,  1_173_588,  22_233_421,  2.0, 14.3, 12.4, 4.0, -4.3, -0.1),
         ],
         "side": None,   # the side summary itself was not captured
+        "venue_country": [
+            ("Japan",         17.7, 76.7,   4.7,  0.0),
+            ("Australia",     11.2, 15.8,  72.0,  1.0),
+            ("Hong Kong",     37.0, 51.7,   8.1,  3.3),
+            ("India",          0.0,  0.0, 100.0,  0.0),
+            ("Taiwan",        34.0, 30.8,  35.2,  0.0),
+            ("Singapore",      0.0,  2.0,  98.0,  0.0),
+            ("Stock Connect", 15.3, 74.7,  10.1,  0.0),
+            ("Malaysia",       0.0,  0.0, 100.0,  0.0),
+            ("Indonesia",      0.0,  1.3,  98.7,  0.0),
+            ("New Zealand",    0.0, 12.7,  87.3,  0.0),
+            ("Philippines",    0.0, 93.2,   6.8,  0.9),
+            ("USA",            0.0,  0.0, 100.0,  0.0),
+        ],
         "country_side": [
             ("Japan",         "BUY", 38.4,  -3.7), ("Japan",         "SELL", 30.5,   2.3),
             ("Australia",     "BUY",  8.4,  -0.5), ("Australia",     "SELL",  4.0,  -1.0),
@@ -3223,6 +3252,69 @@ def chart_marketcap(t: pd.DataFrame, outdir: Path) -> Path:
     return _save(fig, "03c_marketcap", outdir)
 
 
+VENUE_COLS = ["market", "Auction", "Visible Post", "Visible Take", "Dark"]
+
+
+def venue_country(rows, mkt: pd.DataFrame = None):
+    """Venue mix per market, joined to that market's result.
+
+    Rows are transcribed by hand, so each is checked: the four venue shares
+    must sum to 100. This is the table that decides whether a losing market
+    needs to post more or to slow down - opposite instructions, and the
+    aggregate venue split cannot tell them apart.
+    """
+    if not rows:
+        return None
+    t = pd.DataFrame(list(rows), columns=VENUE_COLS).set_index("market")
+    bad = t[(t.sum(axis=1) - 100).abs() > 1.5]
+    for m in bad.index:
+        log(f"  ** CHECK venue_country: {m} sums to {t.loc[m].sum():.1f}%, "
+            "not 100. Re-read that row.")
+    if mkt is not None and not mkt.empty:
+        t = t.join(mkt[["bps", "weight_pct", "spread_bps", "notional_m"]],
+                   how="left")
+    return t
+
+
+def chart_venue_country(t: pd.DataFrame, outdir: Path, min_weight=1.0) -> Path:
+    """Where each market's volume actually goes."""
+    if t is None or t.empty:
+        return None
+    d = t[t.get("weight_pct", pd.Series(100, index=t.index)) >= min_weight]
+    if d.empty:
+        return None
+    d = d.sort_values("weight_pct", ascending=True)
+    fig, ax = plt.subplots(figsize=(10.0, 0.42 * len(d) + 2.0))
+    ys = np.arange(len(d))
+    left = np.zeros(len(d))
+    for seg in VENUE_ORDER:
+        vals = d[seg].values.astype(float)
+        ax.barh(ys, vals, left=left, height=0.6, color=VENUE_COLORS[seg],
+                edgecolor=SURFACE, linewidth=1.6, zorder=3, label=seg)
+        for y, v, l in zip(ys, vals, left):
+            if v >= 8:
+                ax.text(l + v / 2, y, f"{v:.0f}", ha="center", va="center",
+                        fontsize=9, color="white", fontweight="bold")
+        left += vals
+    labels = []
+    for m, r in d.iterrows():
+        bits = []
+        if np.isfinite(r.get("spread_bps", np.nan)):
+            bits.append(f"{r['spread_bps']:.1f} bps spread")
+        if np.isfinite(r.get("bps", np.nan)):
+            bits.append(f"{r['bps']:+.1f}")
+        labels.append(f"{m}\n" + " · ".join(bits) if bits else str(m))
+    ax.set_yticks(ys, labels, fontsize=9)
+    ax.set_xlim(0, 100)
+    ax.set_xticks(range(0, 101, 20), [f"{v}%" for v in range(0, 101, 20)])
+    ax.legend(handles=[Patch(facecolor=VENUE_COLORS[x], label=x)
+                       for x in VENUE_ORDER],
+              loc="upper center", bbox_to_anchor=(0.5, -0.10), ncol=4,
+              fontsize=10)
+    _finish(ax, "Where each market's volume goes")
+    return _save(fig, "07_venue_by_market", outdir)
+
+
 def side_lens(rows, total_notional, min_weight=2.0):
     """Where a market's result splits by side.
 
@@ -3401,6 +3493,8 @@ def analyse_report_only() -> dict:
         "industry": INDUSTRY_REPORT,
         "dark_markets": list(DARK_MARKETS or []),
     }
+    ctx["venue_country"] = venue_country(REPORT.get("venue_country"),
+                                         ctx["market_table"])
     ctx["side_lens"] = side_lens(REPORT.get("country_side"), hl["notional"])
     if ctx["side_lens"] and ctx["side_lens"]["worst"] is not None:
         w = ctx["side_lens"]["worst"]
@@ -3443,6 +3537,8 @@ def make_simple_charts(ctx: dict, outdir: Path) -> dict:
     c["venue"] = chart_venue(outdir)
     # only worth an exhibit where the relationship actually holds; on a book
     # where it does not, the chart would invite a story the data will not carry
+    if ctx.get("venue_country") is not None:
+        c["venue_country"] = chart_venue_country(ctx["venue_country"], outdir)
     if ctx.get("side_lens"):
         c["side"] = chart_side(ctx["side_lens"], outdir)
     L = ctx.get("spread_lens")
@@ -3457,6 +3553,7 @@ def make_simple_charts(ctx: dict, outdir: Path) -> dict:
 
 def build_simple_narrative(ctx: dict) -> dict:
     """Findings and advice, derived from the published tables."""
+    # (ctx is used below for the venue-by-market split)
     hl = ctx["headline"]
     algo = ctx["algo_table"]
     mkt = ctx["market_table"]
@@ -3577,12 +3674,64 @@ def build_simple_narrative(ctx: dict) -> dict:
                 f"everything you trade, together {f_bps(L['tight_bps'])} bps. "
                 "There is no spread to capture there, so the approach that "
                 "works elsewhere has nothing to work with.")
-            n["recs"].append(
-                f"**Trade the tight-spread markets differently.** In {nm} the "
-                f"spread is under {L['breakeven']:.0f} bps, so nothing is "
-                "earned by waiting at the touch. Lower the participation rate, "
-                "give the orders more of the day, and avoid crossing — the aim "
-                "there is to leak less, not to capture more.")
+
+            # the venue mix splits these into two different problems
+            vc = ctx.get("venue_country")
+            crossers, passives = [], []
+            if vc is not None and not vc.empty:
+                for m in L["tight_names"]:
+                    if m not in vc.index:
+                        continue
+                    if float(vc.loc[m, "Visible Take"]) >= 50:
+                        crossers.append(m)
+                    elif float(vc.loc[m, "Visible Take"]) <= 20:
+                        passives.append(m)
+
+            if crossers:
+                worst = max(crossers,
+                            key=lambda m: float(vc.loc[m, "Visible Take"]))
+                tk = float(vc.loc[worst, "Visible Take"])
+                sp = float(vc.loc[worst, "spread_bps"]) \
+                    if np.isfinite(vc.loc[worst].get("spread_bps", np.nan)) else np.nan
+                half = sp / 2 if np.isfinite(sp) else np.nan
+                n["findings"].append(
+                    f"**{worst} crosses the spread on {tk:.0f}% of its volume** "
+                    "and posts nothing at all"
+                    + (f". On a {sp:.1f} bps spread that is roughly "
+                       f"{half:.1f} bps handed over on every order."
+                       if np.isfinite(half) else "."))
+                n["recs"].append(
+                    f"**Start posting in {', '.join(crossers)}.** "
+                    f"{worst} takes on {tk:.0f}% of its volume and never rests "
+                    "an order. This is the one place where the fix is venue, "
+                    "it is fully within your control, and it needs a "
+                    "configuration change rather than a change of strategy.")
+            if passives:
+                nm2 = ", ".join(passives)
+                ex = passives[0]
+                n["findings"].append(
+                    f"**{nm2} already do the right thing on venue** — "
+                    f"{ex} posts {float(vc.loc[ex, 'Visible Post']):.0f}% and "
+                    f"crosses on only {float(vc.loc[ex, 'Visible Take']):.0f}%. "
+                    "Their shortfall is not a venue problem, so routing "
+                    "changes will not fix it.")
+                n["recs"].append(
+                    f"**In {nm2}, leave the venue mix alone and look at "
+                    "timing instead.** They already post and use the "
+                    "midpoint; what is left is participation rate and when in "
+                    "the day the orders run.")
+        vc = ctx.get("venue_country")
+        if vc is not None and not vc.empty and "bps" in vc:
+            good = vc[vc["bps"] > 0].sort_values("bps", ascending=False)
+            if len(good):
+                g = good.index[0]
+                n["notes"].append(
+                    f"{g} is the template worth copying: it posts "
+                    f"{float(vc.loc[g, 'Visible Post']):.0f}%, takes only "
+                    f"{float(vc.loc[g, 'Visible Take']):.0f}% and does "
+                    f"{float(vc.loc[g, 'Dark']):.0f}% in dark — the opposite "
+                    "profile to your weakest markets.")
+
         # the market that misses the pattern is the real place to look
         u = L["underperformer"]
         if u is not None:
@@ -3844,6 +3993,26 @@ def s_industry(prs, ctx, nar):
     footer(s)
 
 
+def s_venue_country(prs, ctx, nar):
+    if not ctx["charts"].get("venue_country"):
+        return
+    s = new_slide(prs)
+    title(s, "Venue, Market by Market")
+    strapline(s, "The same four venue types, split by where you were trading. "
+                 "This is what decides the fix.")
+    picture(s, ctx["charts"]["venue_country"], MARGIN, Inches(1.50),
+            width=Inches(7.3))
+    lines = [l for l in nar["findings"]
+             if "crosses the spread on" in l or "right thing on venue" in l]
+    lines += [r for r in nar["recs"]
+              if "Start posting in" in r or "leave the venue mix alone" in r]
+    bullets(s, lines, Inches(8.05), Inches(1.70), Inches(4.7), Inches(4.6),
+            size=10.5)
+    note(s, "Percentages are of executed value in that market and sum to 100. "
+            "Markets below 1% of value are omitted.")
+    footer(s)
+
+
 def s_side(prs, ctx, nar):
     if not ctx["charts"].get("side"):
         return
@@ -3970,6 +4139,7 @@ def build_simple_deck(ctx: dict, nar: dict, out: Path) -> Path:
     s_industry(prs, ctx, nar)
     s_side(prs, ctx, nar)
     s_spread(prs, ctx, nar)
+    s_venue_country(prs, ctx, nar)
     s_size(prs, ctx, nar)
     s_venue(prs, ctx, nar)
     s_advice(prs, ctx, nar)
@@ -4270,7 +4440,7 @@ def main(argv=None) -> int:
     ALGO_REPORT     = cfg.get("algo_report")
     REPORT          = {k: cfg.get(k) for k in
                        ("country", "marketcap", "adv", "side", "country_side",
-                        "totals")}
+                        "venue_country", "totals")}
     REFERENCE       = cfg["reference"]
 
     out = args.out or Path(CLIENT_NAME) / "output"
@@ -4297,6 +4467,9 @@ def main(argv=None) -> int:
                       "by_adv_bucket": ctx["adv_table"],
                       "by_market_cap": ctx["cap_table"],
                       "by_side": ctx["side_table"],
+                      "venue_by_market": (ctx["venue_country"]
+                                          if ctx.get("venue_country") is not None
+                                          else pd.DataFrame()),
                       "by_market_side": (ctx["side_lens"]["table"]
                                          if ctx.get("side_lens")
                                          else pd.DataFrame())},
