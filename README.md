@@ -80,14 +80,25 @@ set `POSITIVE_IS_SAVING = False` — the reference check will tell you.
 
 ## Report-sourced tables
 
-Two things are **not** in the order-level export and are transcribed from each
-client's report into `CLIENTS`:
+Three tables are taken from each client's report and live in `CLIENTS`:
 
-- **venue segmentation** (auction / post / take / dark) — the order file carries
-  the dark share only
-- **industry breakdown** — there is no sector column at all
+- **venue segmentation** (auction / post / take / dark) — *cannot* be computed;
+  the order file carries the dark share only
+- **industry breakdown** — *cannot* be computed; there is no sector column
+- **algo performance** — *could* be computed, but is taken from the report so all
+  three exhibits agree and the deck shows published figures rather than whatever
+  a mis-mapped column produced
 
-Update both when the period changes. Everything else is computed from the file.
+Update all three when the period changes.
+
+Because the algo table is published rather than derived, the recomputation
+becomes a **per-algo reconciliation**: every run compares orders, notional and
+bps for each algo against the report and flags any gap. A total that reconciles
+while one algo is wrong — two errors cancelling — no longer slips through. Both
+views land in `tables.xlsx` as `by_algo` and `by_algo_computed`, with the
+differences in `algo_reconciliation`.
+
+Everything else is computed from the order file.
 
 ## If the columns don't match
 

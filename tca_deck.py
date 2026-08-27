@@ -102,6 +102,14 @@ CLIENTS = {
             "VWAP":  {"Auction": 23.4, "Visible Post": 39.9, "Visible Take": 21.9, "Dark": 14.8},
             "TOTAL": {"Auction": 23.8, "Visible Post": 36.2, "Visible Take": 26.7, "Dark": 13.4},
         },
+        # algo performance, straight off the report's Performance Summary By
+        # Algorithm. (algo, orders, exec value, %weight, part%, adv%, spread,
+        # benchmark, impact bps, weighted impact bps)
+        "algo_report": [
+            ("VWAP", 1270, 457_503_439, 90.6, 2.1, 1.4, 8.6, "Order PVWAP",    6.5, 5.9),
+            ("IIS",   774,  46_460_964,  9.2, 0.7, 1.2, 8.4, "Day Close Prm",  0.0, 0.0),
+            ("PROG",   30,   1_217_989,  0.2, 0.6, 0.1, 20.8, "Arrival Price", 119.6, 0.3),
+        ],
         # industry: (name, issues, %weight, impact bps, weighted impact bps)
         "industry": [
             ("Consumer Non-cyclical", 141,  9.4,   8.6,  0.8),
@@ -139,6 +147,12 @@ CLIENTS = {
             "VWAP":  {"Auction": 7.5,  "Visible Post": 67.9, "Visible Take": 23.5, "Dark": 1.1},
             "TOTAL": {"Auction": 17.2, "Visible Post": 59.7, "Visible Take": 22.1, "Dark": 1.0},
         },
+        "algo_report": [
+            ("VWAP", 3761, 962_121_454, 87.9, 2.7, 1.9,  4.3, "Order PVWAP",   -1.7, -1.5),
+            ("IIS",   274, 130_978_627, 12.0, 0.5, 0.5,  5.4, "Day Close Prm",  0.0,  0.0),
+            ("PROG",   14,   1_375_612,  0.1, 0.5, 0.4, 12.3, "Arrival Price", 100.3,  0.1),
+            ("SDMA",    3,     370_068,  0.0, 0.6, 0.1, 21.2, "Arrival Price", -41.5, -0.0),
+        ],
         "industry": [
             ("Consumer Non-cyclical",  91, 12.5,   2.8,  0.4),
             ("Utilities",              21,  2.0,  -2.8, -0.1),
@@ -169,6 +183,7 @@ PERIOD_LABEL  = "5 January – 21 August 2026"
 ALGOS_STUDIED = None
 DARK_STORY    = True
 INDUSTRY_REPORT = None
+ALGO_REPORT     = None
 
 # --- Column mapping -------------------------------------------------------
 # Header names are matched case-insensitively and ignoring spaces, dots,
@@ -605,6 +620,22 @@ def sanity_report(df: pd.DataFrame) -> None:
 
     # A benchmark scoring a flat zero can mean one of two very different
     # things. Test which, rather than guessing.
+    rec = reconcile_algo(df, ALGO_REPORT)
+    if not rec.empty:
+        log("")
+        log("  PER-ALGO RECONCILIATION  (order file vs published report)")
+        for algo, r in rec.iterrows():
+            bad = (abs(r["orders_diff"]) > 0 or abs(r["notional_diff_%"]) > 0.5
+                   or abs(r["bps_diff"]) > 0.5)
+            log(f"    {algo:<8} orders {int(r['orders_got']):>6,} vs "
+                f"{int(r['orders_pub']):>6,}   "
+                f"notional {r['notional_diff_%']:+6.2f}%   "
+                f"bps {r['bps_got']:+7.2f} vs {r['bps_pub']:+6.2f}"
+                + ("   <== MISMATCH" if bad else ""))
+        if (rec["bps_diff"].abs() > 0.5).any():
+            log("      -> a per-algo gap that the totals hide usually means the "
+                "benchmark mapping is wrong for that algo")
+
     deg = benchmark_degeneracy(df)
     flagged = deg[deg["verdict"] != "normal"] if not deg.empty else deg
     if len(flagged):
@@ -850,6 +881,63 @@ def _dark_share_eligible(df: pd.DataFrame) -> float:
         return np.nan
 
     return float(100 * e["dark_value"].sum() / e["notional"].sum())
+
+
+def algo_table_from_report(rows, algos=None) -> pd.DataFrame:
+    """The report's algo table, shaped like the computed one.
+
+    Same columns as group_table(df, "algo") so every downstream chart, table
+    and sentence works unchanged. `weight_pct` is renormalised when the review
+    is scoped to a subset of algos, so the percentages still sum to 100.
+    """
+    if not rows:
+        return pd.DataFrame()
+    t = pd.DataFrame(rows, columns=["algo", "n", "notional", "weight_pct",
+                                    "period_part", "adv_pct", "spread_bps",
+                                    "benchmark", "bps", "contrib_bps"])
+    if algos:
+        t = t[t["algo"].isin(algos)]
+        if t.empty:
+            return t
+    t["notional_m"] = t["notional"] / 1e6
+    # blanks for the fields the report does not carry, so the shape matches
+    for c in ["lo", "hi", "beat_rate", "dark_pct", "median_dur_min"]:
+        t[c] = np.nan
+    t["pnl_ccy"] = t["bps"] * t["notional"] / 1e4
+    t = t.set_index("algo").drop(columns=["notional"])
+    order = [a for a in ALGO_ORDER if a in t.index]
+    order += [a for a in t.index if a not in order]
+    return t.reindex(order).round(3)
+
+
+def reconcile_algo(df: pd.DataFrame, rows) -> pd.DataFrame:
+    """Recomputed vs published, per algo.
+
+    The old reference check compared totals only, so two offsetting per-algo
+    errors would pass. This one cannot.
+    """
+    if not rows or df.empty:
+        return pd.DataFrame()
+    pub = {r[0]: {"orders": r[1], "notional": r[2], "bps": r[8]} for r in rows}
+    out = []
+    for algo, sub_df in df.groupby("algo", observed=True):
+        if algo not in pub:
+            continue
+        got_bps = wmean(winsorize(sub_df["slip_primary"]), sub_df["notional"])
+        out.append({
+            "algo": algo,
+            "orders_pub": pub[algo]["orders"], "orders_got": len(sub_df),
+            "notional_pub": pub[algo]["notional"],
+            "notional_got": float(sub_df["notional"].sum()),
+            "bps_pub": pub[algo]["bps"], "bps_got": got_bps,
+        })
+    t = pd.DataFrame(out)
+    if t.empty:
+        return t
+    t["orders_diff"] = t["orders_got"] - t["orders_pub"]
+    t["notional_diff_%"] = 100 * (t["notional_got"] / t["notional_pub"] - 1)
+    t["bps_diff"] = t["bps_got"] - t["bps_pub"]
+    return t.set_index("algo").round(2)
 
 
 def headline(df: pd.DataFrame) -> dict:
@@ -1279,22 +1367,63 @@ def chart_algo(t: pd.DataFrame, outdir: Path, hl: dict) -> Path:
     t = t.iloc[::-1]
     ys = np.arange(len(t))
     vals = t["bps"].values
-    ax.barh(ys, vals, height=0.55, color=_sign_colors(vals), zorder=3)
-    lo = t["bps"] - t["lo"]
-    hi = t["hi"] - t["bps"]
-    err = np.vstack([np.abs(lo.fillna(0)), np.abs(hi.fillna(0))])
-    ax.errorbar(vals, ys, xerr=err, fmt="none", ecolor=INK_MUTED,
-                elinewidth=1.1, capsize=3, zorder=4)
-    labels = [f"{i}\n{int(r.n):,} orders · {r.weight_pct:.0f}% of value"
-              for i, r in t.iterrows()]
+    quotable = (t["n"] >= MIN_N_QUOTABLE).values
+
+    # Scale to the algos that carry real weight. A 30-order algo at +119 bps
+    # would otherwise set the axis and flatten everything that matters.
+    ref = vals[quotable] if quotable.any() else vals
+    span = float(np.nanmax(np.abs(ref))) if len(ref) else 1.0
+    span = max(span, 1.0)
+    lim_hi, lim_lo = span * 1.55, -span * 0.55
+    if np.nanmin(vals) < 0:
+        lim_lo = min(lim_lo, float(np.nanmin(ref)) * 1.55 if len(ref) else lim_lo)
+
+    drawn = np.clip(vals, lim_lo * 0.97, lim_hi * 0.97)
+    clipped = ~np.isclose(drawn, vals)
+    colors = _sign_colors(vals)
+    bars = ax.barh(ys, drawn, height=0.55, color=colors, zorder=3)
+    for b, is_clip, ok in zip(bars, clipped, quotable):
+        if not ok:
+            b.set_alpha(0.45)
+            b.set_hatch("///")
+            b.set_edgecolor(SURFACE)
+        if is_clip:
+            b.set_hatch("///")
+
+    if t["lo"].notna().any():
+        lo = t["bps"] - t["lo"]
+        hi = t["hi"] - t["bps"]
+        err = np.vstack([np.abs(lo.fillna(0)), np.abs(hi.fillna(0))])
+        ax.errorbar(vals, ys, xerr=err, fmt="none", ecolor=INK_MUTED,
+                    elinewidth=1.1, capsize=3, zorder=4)
+
+    labels = []
+    for i, r in t.iterrows():
+        tail = " · too few to quote" if r["n"] < MIN_N_QUOTABLE else ""
+        labels.append(f"{i}\n{int(r.n):,} orders · {r.weight_pct:.0f}% of "
+                      f"value{tail}")
     ax.set_yticks(ys, labels, fontsize=10)
-    _hbar_labels(ax, ys, vals)
+
+    # label every bar with its TRUE value, at the drawn position
+    pad = span * 0.05
+    for y, v, d in zip(ys, vals, drawn):
+        if not np.isfinite(v):
+            continue
+        ax.text(d + (pad if d >= 0 else -pad), y, f"{v:+.1f}",
+                va="center", ha="left" if d >= 0 else "right",
+                fontsize=9.5, color=INK)
     _zero_line(ax)
-    span = np.nanmax(np.abs(vals)) if len(vals) else 1
-    ax.set_xlim(min(-span * 0.35, np.nanmin(vals) * 1.45),
-                max(span * 1.45, 1))
+    ax.set_xlim(lim_lo, lim_hi)
+    if clipped.any():
+        ax.text(0.0, -0.20, "Hatched bars run past the axis; the figure beside "
+                "them is the true value.", transform=ax.transAxes, fontsize=8.5,
+                color=INK_MUTED, ha="left", va="top")
     _finish(ax, "Performance by algorithm",
             xlabel="bps vs benchmark (positive = saving)")
+    if ALGO_REPORT:
+        ax.text(1.0, -0.28, "Source: Performance Summary By Algorithm.",
+                transform=ax.transAxes, fontsize=8.5, color=INK_MUTED,
+                ha="right", va="top")
     _axis_note(ax)
     return _save(fig, "01_algo_performance", outdir)
 
@@ -2842,7 +2971,11 @@ def analyse(df: pd.DataFrame) -> dict:
     ctx = {
         "df": df,
         "headline": headline(df),
-        "algo_table": group_table(df, "algo", order=ALGO_ORDER),
+        "algo_table": (algo_table_from_report(ALGO_REPORT, ALGOS_STUDIED)
+                       if ALGO_REPORT
+                       else group_table(df, "algo", order=ALGO_ORDER)),
+        "algo_computed": group_table(df, "algo", order=ALGO_ORDER),
+        "algo_reconcile": reconcile_algo(df, ALGO_REPORT),
         "market_table": group_table(dpooled, "market_grp", min_n=1)
         if "market_grp" in dpooled else pd.DataFrame(),
         "adv_table": group_table(df, "adv_bucket", order=ADV_LABELS)
@@ -2921,6 +3054,8 @@ def write_tables(ctx: dict, path: Path) -> None:
     sheets = {
         "headline": pd.DataFrame([ctx["headline"]]).T.rename(columns={0: "value"}),
         "by_algo": ctx["algo_table"],
+        "by_algo_computed": ctx.get("algo_computed", pd.DataFrame()),
+        "algo_reconciliation": ctx.get("algo_reconcile", pd.DataFrame()),
         "by_market": ctx["market_table"],
         "by_adv_bucket": ctx["adv_table"],
         "benchmark_matrix": ctx["benchmark_matrix"],
@@ -3022,7 +3157,7 @@ def probe(path: Path) -> int:
 def main(argv=None) -> int:
     global HEADER_ROW, SHEET, CLIENT_NAME, CLIENT_CODE, PERIOD_LABEL
     global ALGOS_STUDIED, DARK_STORY, DARK_MARKETS, VENUE_SEGMENTS_REPORT
-    global INDUSTRY_REPORT, REFERENCE, ALGO_ORDER
+    global INDUSTRY_REPORT, ALGO_REPORT, REFERENCE, ALGO_ORDER
     ap = argparse.ArgumentParser(
         description="Build the client TCA deck from the order export.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -3068,6 +3203,7 @@ def main(argv=None) -> int:
     DARK_MARKETS    = cfg["dark_markets"]
     VENUE_SEGMENTS_REPORT = cfg["venue_segments"]
     INDUSTRY_REPORT = cfg["industry"]
+    ALGO_REPORT     = cfg.get("algo_report")
     REFERENCE       = cfg["reference"]
 
     out = args.out or Path(CLIENT_NAME) / "output"
