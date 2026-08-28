@@ -486,21 +486,29 @@ REFERENCE_TOL = {"orders": 0, "notional": 0.005, "shares": 0.005,
 # below the 15 floor. Final venue set: worst CVD 9.2, worst normal 24.0 — pass.
 # The green carries a contrast WARN (2.74 vs 3.0), which obliges the direct
 # labels and the table that accompany every chart using it.
-SURFACE     = "#fcfcfb"
-INK         = "#0b0b0b"
-INK_SECOND  = "#52514e"
-INK_MUTED   = "#898781"
-GRID        = "#e1e0d9"
-BASELINE    = "#c3c2b7"
+# Sampled from the corporate title slide: azure band, charcoal panel, light
+# grey accent, white ground. Neutrals are pulled toward that grey rather than
+# the warm off-white used before, so charts sit on the same page as the
+# template.
+SURFACE     = "#ffffff"
+INK         = "#111315"
+INK_SECOND  = "#4a4d50"
+INK_MUTED   = "#8a8d90"
+GRID        = "#e6e7e8"
+BASELINE    = "#cccdcc"
 
 # Diverging — cost vs savings. Neutral gray midpoint, never a hue.
-SAVE_COLOR  = "#2a78d6"
-COST_COLOR  = "#d03b3b"
-NEUTRAL     = "#f0efec"
+# Corporate azure carries "good"; the red is stepped a little deeper than the
+# previous one so it holds its contrast against a pure white ground.
+# Validated against white: azure lightness 0.656, chroma 0.147, contrast 3.13;
+# the pair separates 34.4 for normal vision and 25.7 under protan/deutan.
+SAVE_COLOR  = "#2b98e4"
+COST_COLOR  = "#c62828"
+NEUTRAL     = "#f2f3f4"
 
 # Categorical — venue segments. Fixed order, never cycled.
 VENUE_COLORS = {
-    "Auction":      "#2a78d6",
+    "Auction":      "#2b98e4",
     "Visible Post": "#1baf7a",
     "Visible Take": "#eb6834",
     "Dark":         "#4a3aa7",
@@ -508,7 +516,7 @@ VENUE_COLORS = {
 VENUE_ORDER = ["Auction", "Visible Post", "Visible Take", "Dark"]
 
 # Colour follows the entity: dark stays indigo everywhere it appears.
-DARK_GROUP_COLORS = {"No dark": "#2a78d6", "Any dark": "#4a3aa7",
+DARK_GROUP_COLORS = {"No dark": "#2b98e4", "Any dark": "#4a3aa7",
                      "Low dark": "#2a78d6", "High dark": "#4a3aa7"}
 
 FIGSIZE = (10.0, 5.6)
@@ -2058,7 +2066,7 @@ def chart_dark_completion(t: pd.DataFrame, outdir: Path) -> Path:
     fig, axes = plt.subplots(1, len(metrics), figsize=(10.6, 3.6),
                              squeeze=False)
     xs = np.arange(len(t))
-    ramp = ["#86b6ef", "#5598e7", "#3987e5", "#256abf", "#184f95"]
+    ramp = ["#a9d5f5", "#7cc0ef", "#4aa8e9", "#2b98e4", "#1c6ba3"]
     for k, (c, lbl) in enumerate(metrics):
         ax = axes[0][k]
         vals = t[c].values
@@ -2104,9 +2112,10 @@ T_SAVE     = _rgb(SAVE_COLOR)
 T_DARK     = _rgb(VENUE_COLORS["Dark"])
 T_WHITE    = RGBColor(0xFF, 0xFF, 0xFF)
 T_BLACK    = RGBColor(0x00, 0x00, 0x00)
-T_BAND_A   = _rgb("#eef2f7")
-T_BAND_B   = _rgb("#f8f9fb")
-T_HEAD     = _rgb("#2f4a63")
+T_BAND_A   = _rgb("#e8f2fb")     # light azure tint
+T_BAND_B   = _rgb("#f7fbfe")
+T_HEAD     = _rgb("#2b2e31")     # charcoal from the template's panel
+T_ACCENT   = _rgb("#2b98e4")     # corporate azure
 
 FONT = "Calibri"
 SLIDE_W, SLIDE_H = Inches(13.333), Inches(7.5)
@@ -2139,8 +2148,8 @@ def title(slide, text, accent=None):
         _run(p, "     " + accent, size=25, bold=False, color=T_MUTED)
     ln = slide.shapes.add_connector(1, MARGIN, Inches(0.99),
                                     MARGIN + Inches(7.9), Inches(0.99))
-    ln.line.color.rgb = T_BLACK
-    ln.line.width = Pt(2.0)
+    ln.line.color.rgb = T_ACCENT
+    ln.line.width = Pt(2.25)
     return box
 
 
@@ -4090,6 +4099,10 @@ def s_cover(prs, ctx):
     band = s.shapes.add_shape(1, Inches(0), Inches(0), SLIDE_W, Inches(2.45))
     band.fill.solid(); band.fill.fore_color.rgb = T_HEAD
     band.line.fill.background(); band.shadow.inherit = False
+    # the azure band that sits under the charcoal panel on the house template
+    stripe = s.shapes.add_shape(1, Inches(0), Inches(2.45), SLIDE_W, Inches(0.16))
+    stripe.fill.solid(); stripe.fill.fore_color.rgb = T_ACCENT
+    stripe.line.fill.background(); stripe.shadow.inherit = False
 
     box = s.shapes.add_textbox(MARGIN, Inches(0.66), Inches(11.5), Inches(1.5))
     tf = box.text_frame; tf.word_wrap = True
