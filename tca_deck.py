@@ -85,6 +85,12 @@ BROKER   = ""
 #   algos        which algos to analyse. None = every algo in the file.
 #   dark_story   run the dark section at all. Off for a client that barely
 #                uses dark - four slides of "you did 1% of this" is not advice.
+#   exclude_markets
+#                markets the client does not trade and does not want reviewed.
+#                A stray line in the report - a mis-tagged listing, an ADR -
+#                is still a row on every country exhibit, and the client sees
+#                a market they never traded. Dropped everywhere, and what was
+#                dropped is written to the run log.
 #   reference    published headline figures, recomputed and diffed on every run
 #                so a mis-mapped column or an inverted sign is caught early.
 CLIENTS = {
@@ -212,6 +218,10 @@ CLIENTS = {
         # to tell, so the section is switched off and the deck concentrates on
         # the IIS vs VWAP choice instead.
         "dark_story": False,
+        # NPS trades APAC only. The single USA line in the report is a stray -
+        # one order, USD 38k - and putting a market they do not trade on a
+        # client exhibit invites a question with no good answer.
+        "exclude_markets": ["USA"],
         "dark_markets": ["Hong Kong", "Japan", "Australia"],
         "venue_segments": {
             "IIS":   {"Auction": 89.0, "Visible Post": 0.0,  "Visible Take": 11.0, "Dark": 0.0},
@@ -261,7 +271,7 @@ CLIENTS = {
         ],
         "side": None,   # the side summary itself was not captured
         "venue_country": [
-            ("Japan",         17.7, 76.7,   4.7,  0.0),
+            ("Japan",         17.7, 76.7,   4.7,  0.9),
             ("Australia",     11.2, 15.8,  72.0,  1.0),
             ("Hong Kong",     37.0, 51.7,   8.1,  3.3),
             ("India",          0.0,  0.0, 100.0,  0.0),
@@ -271,7 +281,7 @@ CLIENTS = {
             ("Malaysia",       0.0,  0.0, 100.0,  0.0),
             ("Indonesia",      0.0,  1.3,  98.7,  0.0),
             ("New Zealand",    0.0, 12.7,  87.3,  0.0),
-            ("Philippines",    0.0, 93.2,   6.8,  0.9),
+            ("Philippines",    0.0, 93.2,   6.8,  0.0),
             ("USA",            0.0,  0.0, 100.0,  0.0),
         ],
         "country_side": [
@@ -436,6 +446,9 @@ DARK_MIN_NONZERO_SHARE = 0.05
 # Names are matched loosely, so "Hong Kong" and "HongKong" both work.
 # Set to None to use every market in the file.
 DARK_MARKETS = ["Hong Kong", "Japan", "Australia"]
+
+# Markets to drop from the review entirely. Populated from the client config.
+EXCLUDE_MARKETS = []
 # Below this share of zero-dark orders, fall back to a median split.
 DARK_ZERO_SPLIT_THRESHOLD = 0.15
 DARK_CONTROLS = ["adv_bucket", "spread_tercile", "size_tercile", "market"]
@@ -1574,8 +1587,13 @@ def _save(fig, name, outdir: Path) -> Path:
     return path
 
 
-def _hbar_labels(ax, ys, vals, fmt="{:+.1f}", pad=None):
-    """Direct-label every bar, in ink, outside the bar end."""
+def _hbar_labels(ax, ys, vals, fmt="{:+.1f}", pad=None, floor=None):
+    """Direct-label every bar, in ink, outside the bar end.
+
+    `floor` is the smallest magnitude the format can express. Below it the
+    label is written "under 1k" rather than rounded to "-0k", which reads as
+    a real zero and makes a rounding artefact look like a finding.
+    """
     if not len(vals):
         return
     span = max(abs(np.nanmax(vals)), abs(np.nanmin(vals)), 1e-9)
@@ -1583,7 +1601,9 @@ def _hbar_labels(ax, ys, vals, fmt="{:+.1f}", pad=None):
     for y, v in zip(ys, vals):
         if not np.isfinite(v):
             continue
-        ax.text(v + (pad if v >= 0 else -pad), y, fmt.format(v),
+        txt = ("under 1k" if floor is not None and abs(v) < floor
+               else fmt.format(v))
+        ax.text(v + (pad if v >= 0 else -pad), y, txt,
                 va="center", ha="left" if v >= 0 else "right",
                 fontsize=9.5, color=INK)
 
@@ -1638,8 +1658,8 @@ def chart_algo(t: pd.DataFrame, outdir: Path, hl: dict) -> Path:
     labels = []
     for i, r in t.iterrows():
         tail = " · too few to quote" if r["n"] < MIN_N_QUOTABLE else ""
-        labels.append(f"{i}\n{int(r.n):,} orders · {r.weight_pct:.0f}% of "
-                      f"value{tail}")
+        labels.append(f"{i}\n{int(r.n):,} orders · "
+                      f"{f_money(r.notional_m * 1e6)}{tail}")
     ax.set_yticks(ys, labels, fontsize=10)
 
     # label every bar with its TRUE value, at the drawn position
@@ -1669,27 +1689,27 @@ def chart_algo(t: pd.DataFrame, outdir: Path, hl: dict) -> Path:
 # --- Exhibit 2 — where the cost sits ---------------------------------------
 def chart_attribution(t: pd.DataFrame, outdir: Path, by="market",
                       total_bps=None) -> Path:
-    """Contribution to the programme cost, not the per-order rate.
+    """Money made and lost, group by group.
 
-    A market can be expensive per order and irrelevant to the total. The
-    contribution column is what the total is actually made of, so it is what
-    the recommendation should follow.
+    A market can be expensive per order and irrelevant to the total. Drawing
+    the money rather than a contribution in basis points removes the one
+    number a reader has to be taught, and the bars still add to the headline.
     """
-    t = t[t["contrib_bps"].notna()].copy()
-    t = t.sort_values("contrib_bps")
+    t = t[t["pnl_ccy"].notna()].copy()
+    t = t.sort_values("pnl_ccy")
     fig, ax = plt.subplots(figsize=(10.0, 5.8))
     ys = np.arange(len(t))
-    vals = t["contrib_bps"].values
+    vals = (t["pnl_ccy"] / 1e3).values
     ax.barh(ys, vals, height=0.6, color=_sign_colors(vals), zorder=3)
-    labels = [f"{i}\n{r.weight_pct:.0f}% of value · {r.bps:+.1f} bps/order"
+    labels = [f"{i}\n{f_money(r.notional_m * 1e6)} traded · {r.bps:+.1f} bps"
               for i, r in t.iterrows()]
     ax.set_yticks(ys, labels, fontsize=9.5)
-    _hbar_labels(ax, ys, vals, fmt="{:+.2f}")
+    _hbar_labels(ax, ys, vals, fmt="{:+,.0f}k", floor=0.5)
     _zero_line(ax)
-    span = np.nanmax(np.abs(vals)) if len(vals) else 1
-    ax.set_xlim(min(-span * 0.45, np.nanmin(vals) * 1.5), span * 1.5)
-    _finish(ax, f"Effect on your total result, by {by}",
-            xlabel="effect on the total (bps)")
+    span = float(np.nanmax(np.abs(vals))) if len(vals) else 1.0
+    ax.set_xlim(min(-span * 0.45, float(np.nanmin(vals)) * 1.5), span * 1.5)
+    _finish(ax, f"Money made and lost, by {by}",
+            xlabel=f"{CURRENCY} thousands better or worse than benchmark")
     _axis_note(ax, y=-0.10)
     return _save(fig, f"02_attribution_{by}", outdir)
 
@@ -1768,7 +1788,8 @@ def chart_adv(t: pd.DataFrame, outdir: Path) -> Path:
         ax.text(x, v + (off if v >= 0 else -off), f"{v:+.1f}",
                 ha="center", va="bottom" if v >= 0 else "top",
                 fontsize=10, color=INK)
-    ax.set_xticks(xs, [f"{i}\n{int(r.n):,} orders\n{r.weight_pct:.0f}% of value"
+    ax.set_xticks(xs, [f"{i}\n{int(r.n):,} orders\n"
+                       f"{f_money(r.notional_m * 1e6)}"
                        for i, r in t.iterrows()], fontsize=9.5)
     _zero_line(ax, vertical=False)
     _finish(ax, "Performance by order size",
@@ -1828,7 +1849,8 @@ def chart_venue(outdir: Path, order_venue: pd.DataFrame = None) -> Path:
 
 
 # --- Exhibit 3b — industry breakdown ----------------------------------------
-def chart_industry(rows: list, outdir: Path, total_bps=None) -> Path:
+def chart_industry(rows: list, outdir: Path, total_bps=None,
+                   notional=None) -> Path:
     """Contribution by industry, from the report.
 
     Sector is not in the order-level export, so this is transcribed rather than
@@ -1839,22 +1861,30 @@ def chart_industry(rows: list, outdir: Path, total_bps=None) -> Path:
         return None
     t = pd.DataFrame(rows, columns=["industry", "issues", "weight_pct",
                                     "bps", "contrib_bps"])
-    t = t.sort_values("contrib_bps")
+    # the report carries no notional per sector, so rebuild it from the weight
+    t["notional"] = t["weight_pct"] / 100 * (notional or np.nan)
+    t["pnl_ccy"] = t["bps"] * t["notional"] / 1e4
+    money = bool(t["pnl_ccy"].notna().all())
+    t = t.sort_values("pnl_ccy" if money else "contrib_bps")
 
     fig, ax = plt.subplots(figsize=(10.0, 5.8))
     ys = np.arange(len(t))
-    vals = t["contrib_bps"].values
+    vals = (t["pnl_ccy"] / 1e3).values if money else t["contrib_bps"].values
     ax.barh(ys, vals, height=0.6, color=_sign_colors(vals), zorder=3)
-    labels = [f"{r.industry}\n{r.weight_pct:.0f}% of value · "
-              f"{r.bps:+.1f} bps/order"
+    labels = [f"{r.industry}\n"
+              + (f"{f_money(r.notional)} traded · " if money
+                 else f"{r.weight_pct:.0f}% of value · ")
+              + f"{r.bps:+.1f} bps"
               for r in t.itertuples()]
     ax.set_yticks(ys, labels, fontsize=9.5)
-    _hbar_labels(ax, ys, vals, fmt="{:+.2f}")
+    _hbar_labels(ax, ys, vals, fmt="{:+,.0f}k" if money else "{:+.2f}",
+                 floor=0.5 if money else None)
     _zero_line(ax)
-    span = np.nanmax(np.abs(vals)) if len(vals) else 1
+    span = float(np.nanmax(np.abs(vals))) if len(vals) else 1.0
     ax.set_xlim(min(-span * 0.45, float(np.nanmin(vals)) * 1.5), span * 1.5)
-    _finish(ax, "Effect on your total result, by industry",
-            xlabel="effect on the total (bps)")
+    _finish(ax, "Money made and lost, by industry",
+            xlabel=(f"{CURRENCY} thousands better or worse than benchmark"
+                    if money else "effect on the total (bps)"))
     _axis_note(ax, y=-0.10)
     return _save(fig, "03b_industry", outdir)
 
@@ -3257,19 +3287,20 @@ def chart_marketcap(t: pd.DataFrame, outdir: Path) -> Path:
     """Contribution by market-cap band."""
     if t is None or t.empty:
         return None
-    t = t.sort_values("contrib_bps")
+    t = t.sort_values("pnl_ccy")
     fig, ax = plt.subplots(figsize=(10.0, 3.6))
     ys = np.arange(len(t))
-    vals = t["contrib_bps"].values
+    vals = (t["pnl_ccy"] / 1e3).values
     ax.barh(ys, vals, height=0.55, color=_sign_colors(vals), zorder=3)
-    ax.set_yticks(ys, [f"{i}\n{r.weight_pct:.0f}% of value · {r.bps:+.1f} bps"
+    ax.set_yticks(ys, [f"{i}\n{f_money(r.notional_m * 1e6)} traded · "
+                       f"{r.bps:+.1f} bps"
                        for i, r in t.iterrows()], fontsize=9.5)
-    _hbar_labels(ax, ys, vals, fmt="{:+.2f}")
+    _hbar_labels(ax, ys, vals, fmt="{:+,.0f}k", floor=0.5)
     _zero_line(ax)
     span = float(np.nanmax(np.abs(vals))) if len(vals) else 1.0
     ax.set_xlim(min(-span * 0.5, float(np.nanmin(vals)) * 1.6), span * 1.6)
-    _finish(ax, "Effect on your total result, by company size",
-            xlabel="effect on the total (bps)")
+    _finish(ax, "Money made and lost, by company size",
+            xlabel=f"{CURRENCY} thousands better or worse than benchmark")
     return _save(fig, "03c_marketcap", outdir)
 
 
@@ -3348,7 +3379,7 @@ def side_lens(rows, total_notional, min_weight=2.0):
     t = pd.DataFrame(list(rows), columns=["market", "side", "weight_pct", "bps"])
     t["notional"] = t["weight_pct"] / 100 * total_notional
     t["pnl_ccy"] = t["bps"] * t["notional"] / 1e4
-    t["label"] = t["market"] + " · " + t["side"]
+    t["label"] = t["market"] + " " + t["side"].str.lower() + "s"
 
     wide = t.pivot_table(index="market", columns="side", values="bps")
     wide["gap"] = wide.get("BUY", np.nan) - wide.get("SELL", np.nan)
@@ -3376,9 +3407,10 @@ def chart_side(lens: dict, outdir: Path) -> Path:
     ys = np.arange(len(t))[::-1]
     vals = (t["pnl_ccy"] / 1e3).values
     ax.barh(ys, vals, height=0.62, color=_sign_colors(vals), zorder=3)
-    ax.set_yticks(ys, [f"{r.label}   ({r.weight_pct:.1f}% · {r.bps:+.1f} bps)"
+    ax.set_yticks(ys, [f"{r.label}   ({f_money(r.notional)} · "
+                       f"{r.bps:+.1f} bps)"
                        for r in t.itertuples()], fontsize=9)
-    _hbar_labels(ax, ys, vals, fmt="{:+,.0f}k")
+    _hbar_labels(ax, ys, vals, fmt="{:+,.0f}k", floor=0.5)
     _zero_line(ax)
     span = float(np.nanmax(np.abs(vals))) if len(vals) else 1.0
     ax.set_xlim(min(-span * 1.35, float(np.nanmin(vals)) * 1.35), span * 1.35)
@@ -3481,6 +3513,34 @@ def chart_spread_lens(lens: dict, outdir: Path) -> Path:
 
 
 
+def drop_markets() -> None:
+    """Remove excluded markets from every report table, and say what went.
+
+    The published totals are left alone: they are the client's own headline
+    and must keep matching their report. Anything dropped is logged with its
+    orders, value and effect, so the difference is never silent.
+    """
+    if not EXCLUDE_MARKETS:
+        return
+    rows = REPORT.get("country") or []
+    gone = [r for r in rows if r[0] in EXCLUDE_MARKETS]
+    if not gone:
+        log(f"  exclude_markets: {_and(EXCLUDE_MARKETS)} not in the country "
+            "table - nothing to drop")
+        return
+    n_ord = sum(r[1] for r in gone)
+    log(f"  excluded from the review: {_and([r[0] for r in gone])} - "
+        f"{n_ord:,} order{'' if n_ord == 1 else 's'}, "
+        f"{f_money(sum(r[3] for r in gone))}, "
+        f"{f_money(sum(r[3] * r[8] / 1e4 for r in gone))} of effect. "
+        "The published totals are unchanged.")
+    REPORT["country"] = [r for r in rows if r[0] not in EXCLUDE_MARKETS]
+    for key in ("venue_country", "country_side"):
+        if REPORT.get(key):
+            REPORT[key] = [r for r in REPORT[key]
+                           if r[0] not in EXCLUDE_MARKETS]
+
+
 def analyse_report_only() -> dict:
     """Everything the simple deck needs, from the report tables alone."""
     log("")
@@ -3492,6 +3552,7 @@ def analyse_report_only() -> dict:
         sys.exit("FATAL - this client has no published totals in CLIENTS, so "
                  "--simple has nothing to build from.")
 
+    drop_markets()
     hl = headline_from_report(tot)
     country = table_from_report(REPORT.get("country"), "market", tot.get("bps"))
     hl["markets"] = int(len(country)) if not country.empty else np.nan
@@ -3551,7 +3612,8 @@ def make_simple_charts(ctx: dict, outdir: Path) -> dict:
         c["attribution"] = chart_attribution(ctx["market_table"], outdir,
                                              by="market", total_bps=hl["bps"])
     if ctx["industry"]:
-        c["industry"] = chart_industry(ctx["industry"], outdir, hl["bps"])
+        c["industry"] = chart_industry(ctx["industry"], outdir, hl["bps"],
+                                       notional=hl["notional"])
     if not ctx["adv_table"].empty:
         c["adv"] = chart_adv(ctx["adv_table"], outdir)
     if not ctx["cap_table"].empty:
@@ -3573,9 +3635,57 @@ def make_simple_charts(ctx: dict, outdir: Path) -> dict:
     return c
 
 
+# --- narrative items --------------------------------------------------------
+# Every finding, recommendation and caveat is a dict with a tag, so a slide can
+# ask for the lines it wants by name. Matching on substrings of the prose broke
+# silently every time a sentence was reworded.
+
+def _say(bucket, tag, text, value=None):
+    bucket.append({"tag": tag, "text": text, "value": value})
+
+
+def pick(items, *tags):
+    """Texts carrying any of these tags, in the order the tags are given."""
+    out = []
+    for t in tags:
+        out += [i["text"] for i in items if i["tag"] == t]
+    return out
+
+
+def texts(items):
+    return [i["text"] for i in items]
+
+
+def _and(names):
+    """Join names the way a person reads them out."""
+    names = list(names)
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _band(name):
+    """'0-1%' -> 'under 1% of a day\'s volume'."""
+    n = str(name).strip()
+    if n.startswith("0-"):
+        return f"under {n.split('-', 1)[1]} of a day's volume"
+    return f"at {n} of a day's volume"
+
+
+def _money_from(bps, weight_pct, notional):
+    """Currency effect of `bps` earned on `weight_pct` of `notional`."""
+    if not all(np.isfinite(x) for x in (bps, weight_pct, notional)):
+        return np.nan
+    return bps * weight_pct / 100.0 * notional / 1e4
+
+
 def build_simple_narrative(ctx: dict) -> dict:
-    """Findings and advice, derived from the published tables."""
-    # (ctx is used below for the venue-by-market split)
+    """Findings and advice, derived from the published tables.
+
+    House style, because a client reads this once and often out loud: one idea
+    per sentence, no sentence much longer than twenty words, and every
+    recommendation names the thing to change rather than the place to look.
+    """
     hl = ctx["headline"]
     algo = ctx["algo_table"]
     mkt = ctx["market_table"]
@@ -3585,289 +3695,395 @@ def build_simple_narrative(ctx: dict) -> dict:
                        columns=["name", "issues", "weight_pct", "bps",
                                 "contrib_bps"]).set_index("name")
     seg = VENUE_SEGMENTS_REPORT or {}
+    vc = ctx.get("venue_country")
+    S = ctx.get("side_lens")
+    L = ctx.get("spread_lens")
+    NOT_ = hl["notional"]
     ahead = np.isfinite(hl["bps"]) and hl["bps"] >= 0
     n = {"findings": [], "recs": [], "notes": []}
+    F, R, N = n["findings"], n["recs"], n["notes"]
 
-    n["findings"].append(
-        (f"You are **{f_bps(hl['bps'])} bps ahead** of benchmark over the "
-         f"period, worth about **{f_money(abs(hl['pnl_ccy']))}**."
-         if ahead else
-         f"You are **{f_bps(hl['bps'])} bps behind** benchmark over the "
-         f"period, which cost about **{f_money(abs(hl['pnl_ccy']))}**."))
+    def _vc(m, col):
+        try:
+            v = float(vc.loc[m, col])
+            return v if np.isfinite(v) else np.nan
+        except Exception:
+            return np.nan
 
-    # which algo drives it
+    # ---- the headline ----------------------------------------------------
+    _say(F, "headline",
+         (f"You beat the benchmark by **{f_bps(hl['bps'])} bps**. That is "
+          f"about **{f_money(abs(hl['pnl_ccy']))}** kept over the period."
+          if ahead else
+          f"You came in **{f_bps(hl['bps'])} bps** below the benchmark. That "
+          f"cost about **{f_money(abs(hl['pnl_ccy']))}** over the period."))
+
+    # ---- which algo actually decides it ----------------------------------
     if not algo.empty:
         big = algo[algo["n"] >= MIN_N_QUOTABLE]
         if not big.empty:
             k = big["contrib_bps"].idxmax() if ahead else big["contrib_bps"].idxmin()
             r = big.loc[k]
-            n["findings"].append(
-                f"**{k}** is {r['weight_pct']:.0f}% of your volume at "
-                f"{f_bps(r['bps'])} bps — that is where the result is made.")
-        zero = algo[algo["bps"].abs() < 1e-9]
-        for k in zero.index:
-            n["notes"].append(
-                f"{k} is measured against the close and executes in the "
-                f"closing auction, so it scores exactly 0.0 by construction. "
-                f"That is {algo.loc[k, 'weight_pct']:.0f}% of your value we "
-                "cannot rank on this benchmark — arrival would tell us more.")
+            _say(F, "algo",
+                 f"**{k}** handled {f_money(r['notional_m'] * 1e6)} of the "
+                 f"{f_money(NOT_)} you traded. It returned "
+                 f"**{f_bps(r['bps'])} bps**, so your result is really the "
+                 f"{k} result.")
+        for k in algo[algo["bps"].abs() < 1e-9].index:
+            _say(N, "zero_bench",
+                 f"{k} trades in the closing auction and is scored against the "
+                 f"close, so it always scores 0.0. That is "
+                 f"{f_money(algo.loc[k, 'notional_m'] * 1e6)} of trading we "
+                 "cannot judge. Ask for arrival-price scoring instead.")
 
-    # markets
+    # ---- markets ---------------------------------------------------------
+    good = bad = mkt.iloc[0:0]
     if not mkt.empty:
         good = mkt[mkt["contrib_bps"] > 0].sort_values("contrib_bps",
                                                        ascending=False)
         bad = mkt[mkt["contrib_bps"] < 0].sort_values("contrib_bps")
         if len(good):
-            r = good.iloc[0]
+            g, r = good.index[0], good.iloc[0]
             if ahead:
-                # a positive book: the top contributor IS the result
-                share = 100 * r["contrib_bps"] / hl["bps"] if hl["bps"] else np.nan
-                n["findings"].append(
-                    f"**{good.index[0]}** does the heavy lifting: "
-                    f"{r['weight_pct']:.0f}% of value at {f_bps(r['bps'])} bps, "
-                    f"adding **{r['contrib_bps']:+.1f} bps**"
-                    + (f" — {abs(share):.0f}% of the whole result."
-                       if np.isfinite(share) else "."))
+                _say(F, "market_good",
+                     f"**{g}** carries the result. You traded "
+                     f"{f_money(r['notional_m'] * 1e6)} there at "
+                     f"**{f_bps(r['bps'])} bps**, worth "
+                     f"**{f_money(r['pnl_ccy'])}** of your "
+                     f"{f_money(abs(hl['pnl_ccy']))}.")
             else:
-                # a negative book: framing it as "the result" would be wrong
-                n["findings"].append(
-                    f"**{good.index[0]}** is the one bright spot: "
-                    f"{f_bps(r['bps'])} bps on {r['weight_pct']:.0f}% of value, "
-                    f"adding **{r['contrib_bps']:+.1f} bps** back.")
+                _say(F, "market_good",
+                     f"**{g}** is the one market that helps. You traded "
+                     f"{f_money(r['notional_m'] * 1e6)} there at "
+                     f"**{f_bps(r['bps'])} bps**, adding "
+                     f"**{f_money(r['pnl_ccy'])}** back.")
         if len(bad):
             r = bad.iloc[0]
-            worst2 = ", ".join(bad.head(2).index)
-            n["findings"].append(
-                f"**{worst2}** are where you lose: {bad.index[0]} runs "
-                f"{f_bps(r['bps'])} bps on {r['weight_pct']:.0f}% of value.")
+            two = " and ".join(f"**{x}**" for x in bad.head(2).index)
+            _say(F, "market_bad",
+                 f"{two} cost you the most. In {bad.index[0]} you traded "
+                 f"{f_money(r['notional_m'] * 1e6)} at "
+                 f"**{f_bps(r['bps'])} bps**, costing "
+                 f"**{f_money(abs(r['pnl_ccy']))}**.")
 
-    # --- the side split: usually the tightest localisation available --------
-    S = ctx.get("side_lens")
+    # ---- buys against sells ---------------------------------------------
     if S and S["worst"] is not None:
         w, b = S["worst"], S["best"]
-        headline_ccy = abs(hl["pnl_ccy"]) if np.isfinite(hl["pnl_ccy"]) else np.nan
-        n["findings"].append(
-            f"**Splitting buys from sells narrows it right down.** Your "
-            f"worst single pocket is **{w['label']}** — "
-            f"{w['weight_pct']:.1f}% of everything "
-            f"you trade at {f_bps(w['bps'])} bps, or "
-            f"**{f_money(w['pnl_ccy'])}**"
-            + (f" — on its own bigger than the whole "
-               f"{'shortfall' if hl['bps'] < 0 else 'net result'} of "
-               f"{f_money(headline_ccy)}."
-               if np.isfinite(headline_ccy) and abs(w["pnl_ccy"]) > headline_ccy
-               else "."))
+        tot_ccy = abs(hl["pnl_ccy"]) if np.isfinite(hl["pnl_ccy"]) else np.nan
+        _say(F, "side_worst",
+             f"Split by buy and sell, one line stands out. Your "
+             f"**{w['label']}** were {f_money(w['notional'])} at "
+             f"**{f_bps(w['bps'])} bps**. That cost "
+             f"**{f_money(abs(w['pnl_ccy']))}**"
+             + (f", more than the whole shortfall of {f_money(tot_ccy)}."
+                if np.isfinite(tot_ccy) and abs(w["pnl_ccy"]) > tot_ccy
+                and hl["bps"] < 0 else "."))
         if b is not None and b["pnl_ccy"] > 0:
-            n["findings"].append(
-                f"The mirror image is **{b['label']}** at {f_bps(b['bps'])} bps, "
-                f"worth **{f_money(b['pnl_ccy'])}**. Same desk, same period — "
-                "the difference is worth understanding.")
+            _say(F, "side_best",
+                 f"Your **{b['label']}** went the other way: "
+                 f"{f_money(b['notional'])} at **{f_bps(b['bps'])} bps**, "
+                 f"worth **{f_money(b['pnl_ccy'])}**. Same desk, same period.")
         if S["widest"] is not None:
             g = S["wide"].loc[S["widest"]]
-            n["findings"].append(
-                f"**{S['widest']}** shows the widest split: buys "
-                f"{g.get('BUY', np.nan):+.1f} bps against sells "
-                f"{g.get('SELL', np.nan):+.1f}, a "
-                f"**{abs(g['gap']):.0f} bps** gap on the same names in the "
-                "same market.")
-        n["recs"].insert(0,
-            f"**Go straight at {w['label']} orders.** At {f_bps(w['bps'])} bps "
-            f"on {w['weight_pct']:.1f}% of your value this is "
-            f"{f_money(abs(w['pnl_ccy']))} in one cell — a far tighter target "
-            "than any whole-market number. Pull those orders and look at how "
-            "they were scheduled.")
-        n["notes"].append(
-            "A persistent buy/sell gap inside one market over a period this "
-            "long is usually the flow being directional into a trending market "
-            "rather than the algo behaving differently on each side. Worth "
-            "confirming before acting.")
+            _say(F, "side_widest",
+                 f"**{S['widest']}** has the widest split. Buys "
+                 f"{g.get('BUY', np.nan):+.1f} bps, sells "
+                 f"{g.get('SELL', np.nan):+.1f} bps. That is "
+                 f"**{abs(g['gap']):.0f} bps** apart in one market.")
+        _say(N, "side_caution",
+             "A buy/sell gap lasting a whole period is often about market "
+             "direction, not the algo. Confirm that before acting.")
 
-    # --- what the spread explains, and therefore what to actually do --------
-    L = ctx.get("spread_lens")
+    # ---- how each market trades, and therefore what to change ------------
+    # This is the split that separates two opposite instructions: a market that
+    # pays the spread on everything can be fixed with a setting, while one that
+    # already rests in the queue cannot, and telling it to post more would
+    # waste the desk's time.
+    takers = []
+    if vc is not None and not vc.empty and not mkt.empty:
+        for m, r in mkt.iterrows():
+            if m not in vc.index or r["weight_pct"] < 1.0:
+                continue
+            take, sp = _vc(m, "Visible Take"), r["spread_bps"]
+            if not np.isfinite(take) or take < 50 or not np.isfinite(sp):
+                continue
+            if r["bps"] >= max(0.0, hl["bps"]):
+                continue    # it is already beating the book; leave it alone
+            takers.append((m, take, _money_from(sp / 2 * take / 100,
+                                                r["weight_pct"], NOT_)))
+        takers = [t for t in takers if np.isfinite(t[2])]
+        takers.sort(key=lambda x: -x[2])
+
+    # markets that get their own recommendation below, so the posting advice
+    # does not repeat what has already been said
+    covered = list(bad[bad["weight_pct"] >= 2.0].head(2).index) if len(bad) else []
+
+    if takers:
+        m, take, give = takers[0]
+        _say(F, "venue_take",
+             f"**{m} pays the spread on almost everything.** You take the "
+             f"price on offer for {take:.0f}% of what you trade there, and "
+             f"rest in the queue for {_vc(m, 'Visible Post'):.0f}%. At a "
+             f"{mkt.loc[m, 'spread_bps']:.1f} bps spread that is about "
+             f"**{f_money(give)}** given away.")
+        left = [t for t in takers if t[0] not in covered][:3]
+        if left:
+            total_give = sum(t[2] for t in left)
+            _say(R, "rec_post",
+                 f"**Turn on passive posting in {_and(t[0] for t in left)}.** "
+                 "Those orders take the price on offer for at least "
+                 f"{min(t[1] for t in left):.0f}% of their volume. That hands "
+                 f"over about {f_money(total_give)} of spread each period. It "
+                 "is an algo setting, so it is entirely in your control.",
+                 value=total_give)
+
+    passives = []
+    if vc is not None and not vc.empty and len(bad):
+        for m, r in bad.iterrows():
+            if m in vc.index and r["weight_pct"] >= 3.0 \
+                    and _vc(m, "Visible Take") <= 20:
+                passives.append(m)
+    if passives:
+        ex = passives[0]
+        _say(F, "venue_passive",
+             f"**{_and(passives)} already "
+             + ("trades" if len(passives) == 1 else "trade")
+             + f" the right way.** {ex} "
+             f"rests in the queue for {_vc(ex, 'Visible Post'):.0f}% of its "
+             f"volume and pays the spread on only {_vc(ex, 'Visible Take'):.0f}%. "
+             "Whatever is costing you there, it is not the venue.")
+
+    # ---- one recommendation per losing market ----------------------------
+    side_tbl = S["table"] if S else None
+    if len(bad):
+        for m, r in bad[bad["weight_pct"] >= 2.0].head(2).iterrows():
+            lost = abs(r["pnl_ccy"])
+            bits = [f"**Work on {m}.** You traded "
+                    f"{f_money(r['notional_m'] * 1e6)} there at "
+                    f"{f_bps(r['bps'])} bps, costing {f_money(lost)}."]
+            if side_tbl is not None:
+                rows_m = side_tbl[side_tbl["market"] == m]
+                # only worth naming a side when there are two of them
+                if len(rows_m) > 1 and rows_m["pnl_ccy"].min() < 0:
+                    ws = rows_m.loc[rows_m["pnl_ccy"].idxmin()]
+                    bits.append(f"The {ws['side'].lower()} side carries it: "
+                                f"{f_bps(ws['bps'])} bps, "
+                                f"{f_money(abs(ws['pnl_ccy']))}.")
+            take, post = _vc(m, "Visible Take"), _vc(m, "Visible Post")
+            dark, sp = _vc(m, "Dark"), r["spread_bps"]
+            if np.isfinite(take) and take >= 50:
+                bits.append(f"It takes the price on offer for {take:.0f}% of "
+                            "its volume and "
+                            + ("never rests in the queue."
+                               if np.isfinite(post) and post < 1 else
+                               f"rests in the queue for only {post:.0f}%.")
+                            + " Turn passive posting on there first.")
+            elif np.isfinite(take) and take <= 20:
+                bits.append(f"Venue is not the issue: {post:.0f}% already "
+                            f"rests in the queue and {dark:.0f}% goes to the "
+                            "midpoint. Change the pace instead. Run these "
+                            "orders longer and start them earlier in the day.")
+            elif np.isfinite(take) and np.isfinite(sp):
+                half = _money_from(sp / 2 * take / 200, r["weight_pct"], NOT_)
+                bits.append(f"It takes the price on offer for {take:.0f}% of "
+                            f"its volume. Halving that is worth about "
+                            f"{f_money(half)}.")
+            _say(R, "rec_market", " ".join(bits), value=lost)
+
+    # ---- what the spread explains ---------------------------------------
     if L and abs(L["r"]) >= 0.6:
-        n["findings"].append(
-            "**Your result follows the buy/sell gap almost exactly.** You make "
-            "money where that gap is wide and lose where it is narrow. The "
-            f"turning point is around **{L['breakeven']:.1f} bps** — below "
-            "that, there is too little gap to earn anything from.")
+        _say(F, "spread_fit",
+             "**Your result tracks the spread.** Where the spread is wide you "
+             "make money. Where it is tight you lose it. The turning point is "
+             f"about **{L['breakeven']:.1f} bps** of spread.")
         if L["tight_names"] and np.isfinite(L["tight_bps"]):
-            nm = ", ".join(L["tight_names"])
-            n["findings"].append(
-                f"**{nm} are below that line** — {L['tight_share']:.0f}% of "
-                f"everything you trade, together {f_bps(L['tight_bps'])} bps. "
-                "There is no spread to capture there, so the approach that "
-                "works elsewhere has nothing to work with.")
-
-            # the venue mix splits these into two different problems
-            vc = ctx.get("venue_country")
-            crossers, passives = [], []
-            if vc is not None and not vc.empty:
-                for m in L["tight_names"]:
-                    if m not in vc.index:
-                        continue
-                    if float(vc.loc[m, "Visible Take"]) >= 50:
-                        crossers.append(m)
-                    elif float(vc.loc[m, "Visible Take"]) <= 20:
-                        passives.append(m)
-
-            if crossers:
-                worst = max(crossers,
-                            key=lambda m: float(vc.loc[m, "Visible Take"]))
-                tk = float(vc.loc[worst, "Visible Take"])
-                sp = float(vc.loc[worst, "spread_bps"]) \
-                    if np.isfinite(vc.loc[worst].get("spread_bps", np.nan)) else np.nan
-                half = sp / 2 if np.isfinite(sp) else np.nan
-                n["findings"].append(
-                    f"**In {worst} you pay the buy/sell gap on {tk:.0f}% of "
-                    "what you trade** and never leave an order waiting"
-                    + (f". With a gap of {sp:.1f} bps that is about "
-                       f"{half:.1f} bps given away on every single order."
-                       if np.isfinite(half) else "."))
-                n["recs"].append(
-                    f"**Start leaving orders in the market in "
-                    f"{', '.join(crossers)}.** {worst} pays the buy/sell gap "
-                    f"on {tk:.0f}% of what it trades and never once waits for "
-                    "someone to come to it. This is a settings change, it is "
-                    "entirely in your control, and it is the clearest fix in "
-                    "this pack.")
-            if passives:
-                nm2 = ", ".join(passives)
-                ex = passives[0]
-                n["findings"].append(
-                    f"**{nm2} already trade the right way** — {ex} leaves "
-                    f"{float(vc.loc[ex, 'Visible Post']):.0f}% of its orders "
-                    "waiting and pays the gap on only "
-                    f"{float(vc.loc[ex, 'Visible Take']):.0f}%. Whatever is "
-                    "costing them there, it is not where they trade.")
-                n["recs"].append(
-                    f"**In {nm2}, do not change where you trade — change how "
-                    "fast.** They already wait for others to come to them and "
-                    "already use the private venues. What is left is how "
-                    "quickly the orders run and what time of day they run.")
-        vc = ctx.get("venue_country")
-        if vc is not None and not vc.empty and "bps" in vc:
-            good = vc[vc["bps"] > 0].sort_values("bps", ascending=False)
-            if len(good):
-                g = good.index[0]
-                n["notes"].append(
-                    f"{g} is the one to copy: it leaves "
-                    f"{float(vc.loc[g, 'Visible Post']):.0f}% of orders "
-                    "waiting, pays the gap on only "
-                    f"{float(vc.loc[g, 'Visible Take']):.0f}%, and does "
-                    f"{float(vc.loc[g, 'Dark']):.0f}% at the midpoint — the "
-                    "exact opposite of your weakest countries.")
-
-        # the market that misses the pattern is the real place to look
+            nm = ", ".join(f"**{x}**" for x in L["tight_names"])
+            _say(F, "spread_tight",
+                 f"{nm} have almost no spread to earn. That is "
+                 f"{f_money(L['tight_share'] / 100 * NOT_)} of trading "
+                 f"returning **{f_bps(L['tight_bps'])} bps**. Patience alone "
+                 "will not fix them.")
         u = L["underperformer"]
         if u is not None:
             row = L["table"].loc[u]
             if row["vs_fit"] < -3:
                 gap_ccy = abs(row["vs_fit"]) * row["notional_m"] * 1e6 / 1e4
-                n["recs"].append(
-                    f"**Then look at {u} specifically.** Its spread of "
-                    f"{row['spread_bps']:.1f} bps should be delivering about "
-                    f"{row['predicted']:+.0f} bps on this book; it delivers "
-                    f"{row['bps']:+.1f}. That {abs(row['vs_fit']):.0f} bps gap "
-                    f"is worth roughly {f_money(gap_ccy)} and is the one place "
-                    "the pattern does not explain.")
+                extra = ""
+                if vc is not None and u in vc.index:
+                    dk = _vc(u, "Dark")
+                    extra = (f" It takes the price on offer for "
+                             f"{_vc(u, 'Visible Take'):.0f}% of its volume"
+                             + (" and never uses midpoint venues." if dk < 1
+                                else f" and does {dk:.0f}% at the midpoint.")
+                             + " Start there.")
+                _say(R, "rec_outlier",
+                     f"**{u} is your biggest untapped market.** On the "
+                     "pattern your other markets follow, its "
+                     f"{row['spread_bps']:.1f} bps spread should give about "
+                     f"{row['predicted']:+.0f} bps. It gives {row['bps']:+.1f}. "
+                     f"Closing that gap is worth roughly {f_money(gap_ccy)}."
+                     + extra,
+                     value=gap_ccy)
 
-    # industry
+    # ---- the market worth copying ---------------------------------------
+    # Ranking on result alone once crowned a market that takes the price on
+    # offer 100% of the time, which is the opposite of the advice around it.
+    if vc is not None and not vc.empty and "bps" in vc:
+        model = vc[(vc["bps"] > 0) & (vc["weight_pct"] >= 3.0)
+                   & (vc["Visible Post"] >= 40) & (vc["Visible Take"] <= 25)]
+        if len(model):
+            g = model["bps"].idxmax()
+            _say(N, "model_market",
+                 f"{g} is the market to copy: {_vc(g, 'Visible Post'):.0f}% "
+                 f"resting in the queue, only {_vc(g, 'Visible Take'):.0f}% "
+                 f"paying the spread, {_vc(g, 'Dark'):.0f}% at the midpoint, "
+                 f"and {f_bps(vc.loc[g, 'bps'])} bps.")
+
+    # ---- industry --------------------------------------------------------
     if not ind.empty:
-        b = ind["contrib_bps"].idxmax()
-        w = ind["contrib_bps"].idxmin()
-        if ind.loc[w, "contrib_bps"] < 0:
-            n["findings"].append(
-                f"By sector, **{b}** is your best ({ind.loc[b, 'bps']:+.1f} bps) "
-                f"and **{w}** your worst ({ind.loc[w, 'bps']:+.1f} bps on "
-                f"{ind.loc[w, 'weight_pct']:.0f}% of value).")
-            n["recs"].append(
-                f"**Look at {w} and {bad.index[0] if not mkt.empty and len(bad) else 'your weakest market'} together.** "
-                "They are likely the same orders seen two ways; if so there is "
-                "one problem to fix here, not two.")
+        b_i, w_i = ind["contrib_bps"].idxmax(), ind["contrib_bps"].idxmin()
+        if ind.loc[w_i, "contrib_bps"] < 0:
+            w_not = ind.loc[w_i, "weight_pct"] / 100 * NOT_
+            _say(F, "industry",
+                 f"By sector, **{b_i}** is your best at "
+                 f"{ind.loc[b_i, 'bps']:+.1f} bps. **{w_i}** is your worst: "
+                 f"{f_money(w_not)} traded at {ind.loc[w_i, 'bps']:+.1f} bps, "
+                 f"costing {f_money(abs(w_not * ind.loc[w_i, 'bps'] / 1e4))}.")
+            if len(bad):
+                _say(R, "rec_industry",
+                     f"**Check whether {w_i} and {bad.index[0]} are the same "
+                     "orders.** If they are, that is one problem to fix, not "
+                     "two. Ask for the sector list split by market.",
+                     value=0.0)
 
-    # order size
-    # bands with a handful of orders are noise - do not crown them "best"
+    # ---- order size ------------------------------------------------------
+    # A band of forty orders can post a spectacular number by luck, so the
+    # headline goes to the band that carries the money, not the best number.
     adv_q = adv[adv["n"] >= 20] if not adv.empty else adv
     if len(adv_q) >= 2:
-        adv = adv_q
-        best = adv["bps"].idxmax()
-        worst = adv["bps"].idxmin()
-        first = adv.index[0]
-        if worst == first:
-            n["findings"].append(
-                f"**Your smallest orders do worst.** The {first} band returns "
-                f"{f_bps(adv.loc[first, 'bps'])} bps against "
-                f"{f_bps(adv.loc[best, 'bps'])} for {best}, and it is "
-                f"{adv.loc[first, 'weight_pct']:.0f}% of everything you trade.")
-            n["recs"].append(
-                f"**Give your small orders more time.** The {first} band is "
-                "most of what you trade and your weakest result. Letting those "
-                "orders run longer, and waiting for others to come to you "
-                "rather than paying the gap, is the biggest single saving "
-                "available to you.")
+        heavy = adv_q["weight_pct"].idxmax()
+        best = adv_q["bps"].idxmax()
+        hr = adv_q.loc[heavy]
+        if hr["bps"] < adv_q.loc[best, "bps"]:
+            tail = ("" if adv_q.loc[best, "n"] >= MIN_N_QUOTABLE
+                    else f", though on only {int(adv_q.loc[best, 'n'])} orders")
+            _say(F, "size",
+                 "Your biggest group of orders is your weakest. Orders "
+                 f"**{_band(heavy)}** were {f_money(hr['notional_m'] * 1e6)} "
+                 f"and returned **{f_bps(hr['bps'])} bps**. Orders "
+                 f"**{_band(best)}** returned "
+                 f"{f_bps(adv_q.loc[best, 'bps'])} bps{tail}.")
         else:
-            n["findings"].append(
-                f"By size, best on **{best}** ({f_bps(adv.loc[best, 'bps'])}) "
-                f"and weakest on **{worst}** ({f_bps(adv.loc[worst, 'bps'])}).")
+            _say(F, "size",
+                 f"Orders **{_band(heavy)}** were "
+                 f"{f_money(hr['notional_m'] * 1e6)}, most of what you trade, "
+                 f"and returned **{f_bps(hr['bps'])} bps**. That is also your "
+                 "best band, so size is not working against you.")
+        gap = hl["bps"] - hr["bps"]
+        if gap > 0:
+            prize = _money_from(gap, hr["weight_pct"], NOT_)
+            _say(R, "rec_size",
+                 f"**Give the small orders more time.** Orders "
+                 f"{_band(heavy)} are {f_money(hr['notional_m'] * 1e6)} of "
+                 "your trading and your weakest result. These are the easiest "
+                 "orders you send, so there is "
+                 "no reason to rush them. Lengthen the default end time. "
+                 "Bringing this band up to your own average is worth about "
+                 f"{f_money(prize)}.",
+                 value=prize)
+        thin = adv_q[adv_q["n"] < MIN_N_QUOTABLE]
+        if len(thin):
+            _say(N, "size_thin",
+                 f"The {_and(thin.index)} bands hold fewer than "
+                 f"{MIN_N_QUOTABLE} orders each. Treat those numbers as a "
+                 "hint, not a result.")
 
-    # market cap
+    # ---- company size ----------------------------------------------------
     cap_q = cap[cap["n"] >= 20] if not cap.empty else cap
     if not cap_q.empty:
-        cap = cap_q
-        w = cap["bps"].idxmin()
-        if cap.loc[w, "bps"] < 0:
-            n["findings"].append(
-                f"**{w}** is the only cap band losing money "
-                f"({cap.loc[w, 'bps']:+.1f} bps on "
-                f"{cap.loc[w, 'weight_pct']:.0f}% of value) — and at "
-                f"{cap.loc[w, 'adv_pct']:.1f}% ADV these are the easiest names "
-                "you trade.")
+        w_c = cap_q["bps"].idxmin()
+        if cap_q.loc[w_c, "bps"] < 0:
+            lone = int((cap_q["bps"] < 0).sum()) == 1
+            _say(F, "cap",
+                 f"**{w_c}** is "
+                 + ("the only company-size band losing money"
+                    if lone else "your weakest company-size band")
+                 + f". You traded "
+                 f"{f_money(cap_q.loc[w_c, 'notional_m'] * 1e6)} there at "
+                 f"{cap_q.loc[w_c, 'bps']:+.1f} bps, costing "
+                 f"{f_money(abs(cap_q.loc[w_c, 'pnl_ccy']))}. At "
+                 f"{cap_q.loc[w_c, 'adv_pct']:.1f}% of a day's volume these "
+                 "are the easiest names you trade.")
 
-    # venue / dark - one observation, not a section
+    # ---- venue mix by algo ----------------------------------------------
     rows = {a: v for a, v in seg.items() if a != "TOTAL"}
     if rows:
         dark_tot = seg.get("TOTAL", {}).get("Dark", 0)
+        weights = (algo["weight_pct"].to_dict() if not algo.empty else {})
         best_dark = max(rows, key=lambda a: rows[a].get("Dark", 0))
-        no_dark = [a for a in rows if rows[a].get("Dark", 0) < 1]
         if dark_tot >= 5:
-            n["findings"].append(
-                f"**{dark_tot:.0f}% of your volume trades in dark**, almost all "
-                f"of it through {best_dark} ({rows[best_dark]['Dark']:.0f}%).")
-            if no_dark:
-                takers = [a for a in no_dark
-                          if rows[a].get("Visible Take", 0) >= 50]
-                if takers:
-                    n["recs"].append(
-                        f"**Let {', '.join(takers)} use dark too.** "
-                        f"{takers[0]} crosses the spread on "
-                        f"{rows[takers[0]]['Visible Take']:.0f}% of its volume "
-                        "and never tries the midpoint. It is the easiest "
-                        "change on this list.")
+            _say(F, "dark",
+                 f"**{dark_tot:.0f}% of your volume trades at the midpoint**, "
+                 f"nearly all of it through {best_dark} "
+                 f"({rows[best_dark]['Dark']:.0f}%).")
+            # only worth advising on an algo that carries real value: a change
+            # to 0.2% of the book is not a recommendation
+            cand = [a for a in rows
+                    if rows[a].get("Dark", 0) < 1
+                    and rows[a].get("Visible Take", 0) >= 50
+                    and weights.get(a, 0) >= 2.0]
+            if cand:
+                a = max(cand, key=lambda x: weights.get(x, 0))
+                prize = _money_from(hl["spread_bps"] / 2 *
+                                    rows[a]["Visible Take"] / 100 * 0.5,
+                                    weights.get(a, 0), NOT_)
+                _say(R, "rec_algo_venue",
+                     f"**Switch midpoint venues on for {a}.** It takes the "
+                     f"price on offer for {rows[a]['Visible Take']:.0f}% of "
+                     f"its volume and never tries the midpoint. That is "
+                     f"{f_money(algo.loc[a, 'notional_m'] * 1e6)} of trading. "
+                     f"This is one setting, and it is worth roughly "
+                     f"{f_money(prize)}.",
+                     value=prize)
         else:
+            _say(F, "dark",
+                 f"Only **{dark_tot:.1f}%** of your volume trades at the "
+                 "midpoint. Venue is not what decides your result.")
             taker = max(rows, key=lambda a: rows[a].get("Visible Take", 0))
-            n["findings"].append(
-                f"Only **{dark_tot:.1f}%** of your volume trades in dark, so "
-                "venue is not where your result is being decided.")
-            if rows[taker].get("Visible Take", 0) >= 20:
-                n["recs"].append(
-                    f"**Get {taker} posting more and taking less.** It crosses "
-                    f"the spread on {rows[taker]['Visible Take']:.0f}% of its "
-                    f"volume; at a {hl['spread_bps']:.1f} bps spread that is "
-                    f"about {hl['spread_bps']/2:.1f} bps given away each time.")
+            if rows[taker].get("Visible Take", 0) >= 20 and \
+                    weights.get(taker, 0) >= 2.0:
+                tk = rows[taker]["Visible Take"]
+                prize = _money_from(hl["spread_bps"] / 2 * tk / 100 * 0.5,
+                                    weights.get(taker, 0), NOT_)
+                _say(R, "rec_algo_venue",
+                     f"**Get {taker} resting in the queue more and taking "
+                     f"less.** It pays the spread on {tk:.0f}% of its volume. "
+                     f"At a {hl['spread_bps']:.1f} bps spread that is about "
+                     f"{hl['spread_bps'] / 2:.1f} bps each time. Halving it is "
+                     f"worth roughly {f_money(prize)}.",
+                     value=prize)
         auc = max(rows, key=lambda a: rows[a].get("Auction", 0))
         if rows[auc].get("Auction", 0) >= 50:
-            n["notes"].append(
-                f"{auc} puts {rows[auc]['Auction']:.0f}% of its volume into the "
-                "closing auction, so its result is really about where the "
-                "close printed rather than how the order was worked.")
+            _say(N, "auction",
+                 f"{auc} puts {rows[auc]['Auction']:.0f}% of its volume into "
+                 "the closing auction, so its result is about where the close "
+                 "printed, not how the order was worked.")
 
-    n["notes"].append(
-        "Every figure in this pack is taken from the published post-trade "
-        "report for the period, so it reconciles with your own numbers.")
+    _say(N, "source",
+         "Every number here comes from your published post-trade report, so "
+         "it matches what you already hold.")
+
+    # Biggest money first, so "what we would change" is honestly ordered.
+    R.sort(key=lambda x: -(x["value"]
+                           if x["value"] is not None and np.isfinite(x["value"])
+                           else 0.0))
     return n
 
 
 # --- slides ----------------------------------------------------------------
+# Speaker notes are written for someone who has never seen a TCA report. Short
+# sentences, plain words, and the jargon explained the first time it appears.
+
 def s_cover(prs, ctx):
     s = new_slide(prs)
     hl = ctx["headline"]
@@ -3885,7 +4101,7 @@ def s_cover(prs, ctx):
     ahead = np.isfinite(hl["bps"]) and hl["bps"] >= 0
     cards = [
         (f"{hl['orders']:,}", "orders", T_HEAD),
-        (f_money(hl["notional"], 1), "executed", T_HEAD),
+        (f_money(hl["notional"], 1), "traded", T_HEAD),
         (f_bps(hl["bps"]) + " bps", "vs benchmark", T_SAVE if ahead else T_COST),
         (f_money(abs(hl["pnl_ccy"])), "saved" if ahead else "cost",
          T_SAVE if ahead else T_COST),
@@ -3900,97 +4116,119 @@ def s_cover(prs, ctx):
 
     lines = []
     if np.isfinite(hl.get("spread_bps", np.nan)):
-        lines.append(f"A typical order was **{hl['adv_pct']:.1f}%** of what "
-                     "that share normally trades in a day, in markets where "
-                     f"the buy/sell gap averaged **{hl['spread_bps']:.1f} bps** "
-                     "(0.01% = 1 bps).")
+        lines.append(f"A typical order was **{hl['adv_pct']:.1f}%** of a normal "
+                     "day's trading in that share. The average gap between the "
+                     "buy and sell price was "
+                     f"**{hl['spread_bps']:.1f} bps**.")
     if np.isfinite(hl.get("dark_share", np.nan)):
-        lines.append(f"**{hl['dark_share']:.1f}%** of volume traded in dark.")
-    lines.append("All figures are taken from your published post-trade report "
-                 "for the period.")
+        lines.append(f"**{hl['dark_share']:.1f}%** of your volume traded at the "
+                     "midpoint, in private venues.")
+    lines.append("Every number comes from your published post-trade report.")
     bullets(s, lines, MARGIN, Inches(4.35), Inches(11.9), Inches(1.5), size=12.5)
-    note(s, "A plus means you beat the benchmark and saved money. A minus means "
-            "it cost you.")
+    note(s, "1 bps = 0.01%. A plus means you saved money, a minus means it "
+            "cost you. The summary and the advice are the last two slides.")
     notes(s, f"""WHAT THIS SLIDE SHOWS
 The headline numbers for the whole period, in one place.
 
-WORDS USED HERE
-"bps" is short for basis points. 1 bps = 0.01%, so 100 bps = 1%. We use it
-because these differences are small compared with the amount of money traded,
-and percentages would be full of zeros.
+THE WORDS
+"bps" means basis points. 1 bps is 0.01%. 100 bps is 1%. We use it because
+these differences are small next to the amounts traded.
 
-"Benchmark" is a fair reference price we compare you against. For most of your
-orders it is the average price everyone else paid while your order was running.
-If you did better than that reference, you saved money.
+"Benchmark" is the fair reference price we measure you against. For most of
+your orders it is the average price the rest of the market paid while your
+order was running. Beat it and you saved money.
 
 THE NUMBER THAT MATTERS
 {_cover_line(hl)}
 
-Everything in this pack comes from your own post-trade report, so every number
-here should match what you already have.""")
+Everything here comes from your own post-trade report. Every number should
+match what you already hold.""")
     footer(s)
 
 
 def s_summary(prs, ctx, nar):
+    """What we found.
+
+    It sits second from last, next to the advice, because a reader who has
+    just been through the evidence wants the wrap-up and the action together.
+    The headline itself is already on the cover, so nothing is lost by
+    holding this back.
+    """
     s = new_slide(prs)
     hl = ctx["headline"]
     title(s, "Summary")
     ahead = hl["bps"] >= 0
     strapline(s, (f"{f_bps(hl['bps'])} bps "
-                  + ("ahead of" if ahead else "behind")
-                  + f" benchmark ({f_money(abs(hl['pnl_ccy']))}). "
-                  + "Here is what drove it and what we would change."))
+                  + ("better than benchmark, worth " if ahead
+                     else "worse than benchmark, costing ")
+                  + f"{f_money(abs(hl['pnl_ccy']))}. "
+                  + "The next slide says what to do about it."))
 
-    box = s.shapes.add_textbox(MARGIN, Inches(1.62), Inches(6.25), Inches(0.32))
-    _run(box.text_frame.paragraphs[0], "WHAT WE SEE", size=11, bold=True,
-         color=T_HEAD)
-    bullets(s, nar["findings"][:6], MARGIN, Inches(1.98), Inches(6.25),
-            Inches(4.0), size=11)
+    left = pick(nar["findings"], "headline", "algo", "market_good",
+                "market_bad")
+    right = pick(nar["findings"], "side_worst", "side_best", "size",
+                 "cap", "spread_tight")[:4]
 
-    x2 = Inches(7.15)
-    box = s.shapes.add_textbox(x2, Inches(1.62), Inches(5.55), Inches(0.32))
-    _run(box.text_frame.paragraphs[0], "WHAT WE ADVISE", size=11, bold=True,
-         color=T_HEAD)
-    bullets(s, nar["recs"][:4], x2, Inches(1.98), Inches(5.55), Inches(4.0),
-            size=11)
+    w = Inches(5.9)
+    for x, head, items in [(MARGIN, "THE RESULT", left[:4]),
+                           (Inches(6.85), "WHERE IT COMES FROM", right)]:
+        box = s.shapes.add_textbox(x, Inches(1.62), w, Inches(0.32))
+        _run(box.text_frame.paragraphs[0], head, size=11, bold=True,
+             color=T_HEAD)
+        bullets(s, items, x, Inches(1.98), w, Inches(4.4), size=11.5)
+    note(s, "This deck cuts the same money several ways — by country, by "
+            "sector, by order size, by company size. The cuts overlap, so do "
+            "not add them together.")
     notes(s, """WHAT THIS SLIDE SHOWS
-Left: what the numbers say. Right: what we think you should do about it.
+Everything the deck found, on one page.
 
 HOW TO READ IT
-Everything on the left is measured, not estimated. Every figure traces back to
-a slide later in the pack.
+Left: the result and which algo and which country produced it.
+Right: where inside those countries the money actually sits.
 
-The right-hand side is ordered by size of the opportunity, biggest first. Each
-one names a specific change, not just a place to look.
+Every figure here is measured, and every one has a chart earlier in the deck
+behind it.
 
-IF YOU ONLY READ ONE SLIDE
-Read this one. The rest of the pack is the evidence behind it, in case someone
-asks "how do you know?".""")
+TWO NUMBERS, THAT IS ALL
+Money is size and effect: what you traded, and what it made or cost.
+Bps is quality per order: how well each order did against its benchmark.
+A country can be large and mediocre, or small and terrible. The money tells
+you which one is worth your time.
+
+THE QUESTION THIS INVITES
+"You told me one country cost us X, and one sector cost us Y. Which is it?"
+Both. They are the same money sliced two different ways, and the same orders
+appear in each. Every slide adds to the headline on its own. The slides must
+not be added to each other.
+
+WHAT COMES NEXT
+The final slide turns this into four changes, ordered by money.""")
     footer(s)
 
 
 def s_algo(prs, ctx):
     s = new_slide(prs)
     title(s, "By Algorithm")
-    strapline(s, "Which tools you use, and how each performs against its own "
-                 "benchmark.")
+    strapline(s, "How each algo did against its own benchmark, and how much "
+                 "it moved your total.")
     picture(s, ctx["charts"].get("algo"), MARGIN, Inches(1.55),
             width=Inches(7.4))
     algo = ctx["algo_table"]
     if not algo.empty:
-        data = [["Algo", "Orders", "% of value", "Gap", "Result",
-                 "Effect on total"]]
+        data = [["Algo", "Orders", "Traded", "Spread", "Result",
+                 "Money"]]
         colored, thin = {}, False
         for i, (idx, r) in enumerate(algo.iterrows(), start=1):
             tag = ""
             if r["n"] < MIN_N_QUOTABLE:
                 tag, thin = " *", True
             data.append([f"{idx}{tag}", f"{int(r['n']):,}",
-                         f"{r['weight_pct']:.1f}%",
+                         f_money(r["notional_m"] * 1e6),
                          f"{r['spread_bps']:.1f}",
-                         f_bps(r["bps"]), f_bps(r["contrib_bps"], 2)])
+                         f_bps(r["bps"]),
+                         f_money(r["pnl_ccy"])])
             colored[(i, 4)] = "save" if r["bps"] >= 0 else "cost"
-            colored[(i, 5)] = "save" if r["contrib_bps"] >= 0 else "cost"
+            colored[(i, 5)] = "save" if r["pnl_ccy"] >= 0 else "cost"
         table(s, data, Inches(8.15), Inches(1.70), Inches(4.6),
               row_h=Inches(0.30), colored=colored)
         y = Inches(1.74) + Inches(0.30) * len(data)
@@ -4000,75 +4238,89 @@ def s_algo(prs, ctx):
                  f"* under {MIN_N_QUOTABLE} orders — not a reliable number",
                  size=8, color=T_MUTED)
             y = y + Inches(0.30)
+        cut = [r for r in (ALGO_REPORT or [])
+               if ALGOS_STUDIED and r[0] not in ALGOS_STUDIED]
+        if cut:
+            box = s.shapes.add_textbox(Inches(8.15), y, Inches(4.6),
+                                       Inches(0.5))
+            box.text_frame.word_wrap = True
+            _run(box.text_frame.paragraphs[0],
+                 f"{_and([r[0] for r in cut])} are not reviewed here: "
+                 f"{sum(r[1] for r in cut):,} orders, "
+                 f"{f_money(sum(r[2] for r in cut))}, "
+                 f"{f_money(sum(r[2] * r[8] / 1e4 for r in cut))} between "
+                 "them. That is the gap to the cover figure.",
+                 size=8, color=T_MUTED)
+            y = y + Inches(0.42)
         zero = algo[algo["bps"].abs() < 1e-9]
         if len(zero):
             box = s.shapes.add_textbox(Inches(8.15), y + Inches(0.15),
                                        Inches(4.6), Inches(1.6))
             tf = box.text_frame; tf.word_wrap = True
             _run(tf.paragraphs[0],
-                 f"{', '.join(zero.index)} executes in the closing auction and "
-                 "is measured against the close, so it scores exactly zero on "
-                 "every order. That is arithmetic, not performance — to judge "
-                 "it we would need to measure it against arrival instead.",
+                 f"{', '.join(zero.index)} trades in the closing auction and is "
+                 "scored against the closing price. It is compared with itself, "
+                 "so it always scores zero. Ask for it to be scored against the "
+                 "arrival price instead.",
                  size=9.5, color=T_MUTED)
     notes(s, """WHAT THIS SLIDE SHOWS
-How each of your trading algorithms performed.
+How each of your algos performed.
 
-WORDS USED HERE
-An "algorithm" is the automated strategy that works your order in the market
-for you. VWAP spreads an order out through the day so you get close to the
-day's average price. IIS aims to trade at the closing price.
+THE WORDS
+An "algo" is the automated strategy that works your order in the market. VWAP
+spreads an order through the day to land near the day's average price. IIS
+aims to trade at the closing price.
 
-"Contribution" is the important column. An algorithm only moves your overall
-number if it performs well AND handles a lot of your volume. Something that is
-brilliant on 1% of your trading barely matters.
+"Effect on total" is the column that matters. An algo only moves your number
+if it does well AND handles a lot of your volume. Brilliant on 1% of the flow
+changes nothing.
 
 WATCH OUT FOR THIS
-If an algorithm shows exactly 0.0, that is not a perfect score. It happens when
-the algorithm trades in the closing auction and is then measured against the
-closing price - it is being compared with itself, so the answer is always zero.
-It does not tell us whether that algorithm did a good or bad job. To judge it we
-would need to compare it against the price when the order arrived instead.
+A score of exactly 0.0 is not a perfect score. It happens when an algo trades
+in the closing auction and is then measured against the closing price. It is
+being compared with itself, so the answer is always zero. It tells us nothing
+about how well that algo worked. Ask for it to be measured against the price
+when the order arrived instead.
 
-Anything marked with a star has too few orders to be reliable. A handful of
-trades can produce a spectacular number by luck.""")
+A star means too few orders to trust. A handful of trades can produce a
+spectacular number by luck.""")
     footer(s)
 
 
 def s_market(prs, ctx, nar):
     s = new_slide(prs)
     title(s, "By Market")
-    strapline(s, "A country only moves your total if you did well or badly "
-                 "there AND you traded a lot there.")
+    strapline(s, "A country moves your total only if you did well or badly "
+                 "there and traded a lot there.")
     picture(s, ctx["charts"].get("attribution"), MARGIN, Inches(1.52),
             width=Inches(7.5))
-    lines = [l for l in nar["findings"]
-             if "heavy lifting" in l or "where you lose" in l]
+    lines = pick(nar["findings"], "market_good", "market_bad")
     mkt = ctx["market_table"]
     if not mkt.empty:
         top3 = mkt.nlargest(3, "notional_m")
-        lines.append("Your three biggest markets — **"
-                     + "**, **".join(top3.index)
-                     + f"** — are {top3['weight_pct'].sum():.0f}% of everything "
-                       "you trade.")
+        lines.append("Your three biggest markets are "
+                     + _and([f"**{x}**" for x in top3.index])
+                     + f". Together that is "
+                     f"{f_money(top3['notional_m'].sum() * 1e6)} of the "
+                     f"{f_money(ctx['headline']['notional'])} you traded.")
     bullets(s, lines, Inches(8.20), Inches(1.72), Inches(4.55), Inches(4.3),
             size=11)
     notes(s, """WHAT THIS SLIDE SHOWS
 Which countries helped your result and which hurt it.
 
 HOW TO READ IT
-The bar is not simply "how well did we trade there". It is how well you traded
+Each bar is the money that country made or lost. That is how well you traded
 there multiplied by how much you traded there.
 
-That matters. A country can be terrible but tiny, and barely affect your total.
-Another can be only slightly bad but enormous, and dominate it. The label under
-each country name shows both halves, so you can see which is which.
+Both halves matter. A country can be bad but tiny, and barely move your total.
+Another can be slightly bad but huge, and dominate it. The label under each
+name shows both: how much you traded, and how well.
 
-Blue bars add to your result. Red bars take away from it. Add all the bars
-together and you get the headline number from slide 1.
+Blue bars are money made. Red bars are money lost. Add all the bars together
+and you get the figure on the cover.
 
 WHY IT MATTERS
-It tells you where your attention is actually worth spending.""")
+It shows where your attention is worth spending.""")
     footer(s)
 
 
@@ -4077,30 +4329,30 @@ def s_industry(prs, ctx, nar):
         return
     s = new_slide(prs)
     title(s, "By Industry")
-    strapline(s, "The same result, cut by sector.")
+    strapline(s, "The same result, grouped by sector instead of by country.")
     picture(s, ctx["charts"]["industry"], MARGIN, Inches(1.52),
             width=Inches(7.3))
-    lines = [l for l in nar["findings"] if "By sector" in l]
-    lines.append("Read this against the market view. If the same names keep "
-                 "appearing in both, the issue is the stock rather than the "
-                 "country or the venue.")
+    lines = pick(nar["findings"], "industry")
+    lines += pick(nar["recs"], "rec_industry")
+    lines.append("Read this against the market slide. If the same names appear "
+                 "in both, the problem is the stock, not the country.")
     bullets(s, lines, Inches(8.05), Inches(1.72), Inches(4.7), Inches(4.3),
-            size=11)
-    note(s, "Sector figures are taken from the published industry breakdown.")
+            size=10.5)
+    note(s, "Sector figures come from the published industry breakdown.")
     notes(s, """WHAT THIS SLIDE SHOWS
-The same money as the previous slide, but grouped by the kind of company you
-were trading rather than the country.
+The same money as the last slide, grouped by the kind of company rather than
+the country.
 
 HOW TO READ IT
-Exactly like the country slide: performance multiplied by how much you traded.
+Exactly like the country slide. Result multiplied by how much you traded.
 
 WHY IT MATTERS
-This is a cross-check. If a problem shows up in one country AND in one sector,
-those are probably the same orders being described two different ways - so
-there is one thing to fix, not two.
+This is a cross-check. If a problem shows up in one country and in one sector,
+those are probably the same orders described two ways. One thing to fix, not
+two.
 
-If a sector looks bad but is spread evenly across countries, that points at the
-shares themselves rather than at where or how you traded them.""")
+If a sector looks bad but is spread evenly across countries, the problem is
+the shares themselves, not where or how you traded them.""")
     footer(s)
 
 
@@ -4108,51 +4360,49 @@ def s_venue_country(prs, ctx, nar):
     if not ctx["charts"].get("venue_country"):
         return
     s = new_slide(prs)
-    title(s, "Venue, Market by Market")
-    strapline(s, "How your shares actually changed hands, country by "
-                 "country. This is what decides the fix.")
+    title(s, "How Each Market Trades")
+    strapline(s, "Where your shares actually change hands. This is what "
+                 "decides which fix applies.")
     picture(s, ctx["charts"]["venue_country"], MARGIN, Inches(1.50),
             width=Inches(7.3))
-    lines = [l for l in nar["findings"]
-             if "crosses the spread on" in l or "right thing on venue" in l]
-    lines += [r for r in nar["recs"]
-              if "Start posting in" in r or "leave the venue mix alone" in r]
+    lines = pick(nar["findings"], "venue_take", "venue_passive")
+    # when every taking market already has its own recommendation, show that
+    # one here rather than leaving the slide with no action on it
+    lines += pick(nar["recs"], "rec_post") or pick(nar["recs"], "rec_market")[:1]
     bullets(s, lines, Inches(8.05), Inches(1.70), Inches(4.7), Inches(4.6),
             size=10.5)
-    note(s, "Percentages are of executed value in that market and sum to 100. "
-            "Markets below 1% of value are omitted.")
+    note(s, "Each bar adds to 100% of what you traded in that market. "
+            "Markets below 1% of your trading are left out.")
     notes(s, """WHAT THIS SLIDE SHOWS
 Where your shares actually change hands in each country. There are four ways,
-and they are worth understanding because the difference between them is money.
+and the difference between them is money.
 
 THE FOUR WAYS
-AUCTION (blue) - the single big batch trade that happens at the open or the
-close of the day. Everyone trades at one price.
+AUCTION (blue). The single batch trade at the open or the close. Everyone
+trades at one price.
 
-POSTED (green) - you leave your order sitting in the market and wait for
-someone to come to you. You earn the spread for being patient. The risk is that
-you might not get filled.
+RESTING IN THE QUEUE (green). You leave your order in the market and wait for
+someone to come to you. You earn the spread for being patient. The risk is
+that you do not get filled.
 
-CROSSING THE SPREAD (orange) - you take the price that is on offer right now.
-It is immediate and certain, but you pay away roughly half the spread every
-time you do it.
+PAYING THE SPREAD (orange). You take the price on offer right now. It is
+immediate and certain, but you give away about half the spread each time.
 
-DARK (purple) - a private venue where two sides meet at the midpoint price. No
-spread paid and none earned. You only get filled if someone else happens to
-want the other side.
+MIDPOINT (purple). A private venue where both sides meet in the middle. No
+spread paid and none earned. You only trade if someone wants the other side.
 
 HOW TO READ IT
-Each bar adds up to 100% of what you traded in that country. Broadly, more
-green and purple is better, more orange means you are paying the spread away.
+Each bar adds up to 100% of what you traded in that country. More green and
+purple is generally better. More orange means you are giving the spread away.
 
 WHY THIS SLIDE DECIDES THE FIX
-A country that loses money AND crosses the spread a lot can be improved by
-changing settings - that is fully in your control.
+A country that loses money and pays the spread a lot can be fixed with a
+setting. That is fully in your control.
 
-A country that loses money but already posts and already uses dark cannot be
-fixed that way. Its problem is something else, usually how fast the orders run
-or what time of day they run. Telling that desk to "post more" would waste
-their time.""")
+A country that loses money but already rests in the queue and already uses
+midpoint venues cannot be fixed that way. Its problem is pace: how long the
+orders run, and what time of day they run. Telling that desk to post more
+would waste their time.""")
     footer(s)
 
 
@@ -4162,138 +4412,127 @@ def s_side(prs, ctx, nar):
     s = new_slide(prs)
     title(s, "By Market and Side")
     strapline(s, "The same money, split into what you bought and what you "
-                 "sold. This is where the number really sits.")
+                 "sold. This is the sharpest view in the deck.")
     picture(s, ctx["charts"]["side"], MARGIN, Inches(1.50),
             width=Inches(7.2))
-    lines = [l for l in nar["findings"]
-             if "narrows it right down" in l or "mirror image" in l
-             or "widest split" in l]
-    lines += [r for r in nar["recs"] if "Go straight at" in r]
+    lines = pick(nar["findings"], "side_worst", "side_best", "side_widest")
+    lines += pick(nar["recs"], "rec_market")[:1]
     bullets(s, lines, Inches(7.95), Inches(1.70), Inches(4.8), Inches(4.5),
             size=10.5)
-    note(s, "Cells above 1% of value. Money is that cell's share of value "
-            "multiplied by its result, so it reconciles to the headline.")
+    note(s, "Only groups worth more than 1% of what you traded are shown. "
+            "Each bar is the money that group made or lost, so the bars add "
+            "back to the headline.")
     notes(s, """WHAT THIS SLIDE SHOWS
-The same money again, but now split by whether you were buying or selling.
+The same money again, now split by whether you were buying or selling.
 
 HOW TO READ IT
 Each row is one country and one direction. "India - BUY" means every share you
 bought in India over the period.
 
-The bars are in dollars rather than percentages, so the longest bar really is
-the largest amount of money. A big percentage on a tiny market cannot outrank a
-small percentage on a huge one.
+The bars are in dollars, not percentages. The longest bar really is the
+largest amount of money.
 
-WHY THIS IS THE SHARPEST SLIDE IN THE PACK
-Buying and selling in the same country often go in opposite directions, and
-they cancel each other out on every other slide. A country can look calm
-overall while hiding a large loss on one side and a large gain on the other.
-Splitting them apart is what lets you point at one specific pocket instead of a
+WHY THIS IS THE SHARPEST SLIDE
+Buying and selling in the same country often go in opposite directions. They
+cancel each other out on every other slide. A country can look calm overall
+while hiding a large loss on one side and a large gain on the other.
+
+Splitting them lets you point at one specific group of orders instead of a
 whole country.
 
-ONE THING TO CHECK BEFORE ACTING
-A gap between buying and selling that lasts for months is often about the
-market direction rather than the trading. If prices were rising all period and
-you were mostly buying, buying will look worse. Worth confirming before
-changing anything.""")
+CHECK THIS BEFORE ACTING
+A buy/sell gap that lasts for months is often about market direction, not
+trading. If prices rose all period and you were mostly buying, buys will look
+worse. Worth confirming first.""")
     footer(s)
 
 
 def s_spread(prs, ctx, nar):
     if not ctx["charts"].get("spread"):
         return
-    L = ctx["spread_lens"]
     s = new_slide(prs)
     title(s, "What Explains the Result")
-    strapline(s, "You make money where the buy/sell gap is wide, and lose "
-                 "money where it is narrow.")
+    strapline(s, "Where the buy/sell gap is wide you make money. Where it is "
+                 "tight you lose it.")
     picture(s, ctx["charts"]["spread"], MARGIN, Inches(1.52),
             width=Inches(7.5))
-    lines = [l for l in nar["findings"]
-             if "follows the buy/sell gap" in l or "below that line" in l]
-    lines += [r for r in nar["recs"] if "tight-spread markets" in r
-              or "specifically" in r]
+    lines = pick(nar["findings"], "spread_fit", "spread_tight")
+    lines += pick(nar["recs"], "rec_outlier")
     bullets(s, lines, Inches(8.20), Inches(1.72), Inches(4.55), Inches(4.4),
             size=10.5)
     note(s, "Countries where you placed at least 50 orders. The line is the "
-            "overall trend; each bubble is sized by how much you trade there.")
-    notes(s, f"""WHAT THIS SLIDE SHOWS
-Why some countries work well for you and others do not.
+            "overall trend. Each bubble is sized by how much you trade there.")
+    notes(s, """WHAT THIS SLIDE SHOWS
+Why some countries work for you and others do not.
 
-WORDS USED HERE
-The "spread" is the gap between the highest price a buyer is offering and the
-lowest price a seller is asking. If you are patient and let others come to you,
-you earn that gap. If you are in a hurry and take the price on offer, you pay
-it.
+THE WORDS
+The "spread" is the gap between the best buying price and the best selling
+price. Wait, and you earn that gap. Hurry, and you pay it.
 
-A wide spread means there is a lot to be gained by being patient. A tight
-spread means there is almost nothing there either way.
+A wide spread means there is a lot to gain by being patient. A tight spread
+means there is almost nothing there either way.
 
 HOW TO READ IT
-Each bubble is a country. Further left = tighter spread. Higher up = better
-result. The bubble size is how much you trade there.
+Each bubble is a country. Further left means a tighter spread. Higher up means
+a better result. Bubble size is how much you trade there.
 
-The dotted line is roughly the point where the two balance out. Countries to
-the left of it are ones where there is very little spread to be earned.
+The dotted line is roughly where the two balance out. Countries to the left of
+it have very little spread to earn.
 
 WHY IT MATTERS
 Your results line up with the spread almost exactly. That tells us your
 strategy makes its money by earning the spread. Where the spread is tiny, that
-strategy has nothing to work with - so those countries do not need more effort,
-they need a different approach. That is what the next slide gets into.""")
+strategy has nothing to work with. Those countries do not need more patience.
+They need a different approach. The next slide shows which.""")
     footer(s)
 
 
 def s_size(prs, ctx, nar):
     s = new_slide(prs)
     title(s, "By Order Size")
-    strapline(s, "How you do on small orders versus large ones.")
-    # the two charts share the slide: order size on the left, market cap
-    # tucked under the commentary on the right
+    strapline(s, "How you do on small orders against large ones.")
     picture(s, ctx["charts"].get("adv"), MARGIN, Inches(1.52),
             width=Inches(7.1))
-    lines = [l for l in nar["findings"]
-             if "smallest orders" in l or "By size" in l
-             or "only cap band" in l]
-    bullets(s, lines, Inches(8.05), Inches(1.72), Inches(4.7), Inches(2.2),
+    lines = pick(nar["findings"], "size", "cap")
+    lines += pick(nar["recs"], "rec_size")
+    bullets(s, lines, Inches(8.05), Inches(1.72), Inches(4.7), Inches(2.4),
             size=10.5)
-    picture(s, ctx["charts"].get("cap"), Inches(8.05), Inches(4.20),
+    picture(s, ctx["charts"].get("cap"), Inches(8.05), Inches(4.35),
             width=Inches(4.75))
     notes(s, """WHAT THIS SLIDE SHOWS
 Whether your small orders or your big orders get the better result.
 
-WORDS USED HERE
-"% of average daily volume" is how big your order is compared with how much
-that share normally trades in a whole day. An order that is 1% of a normal day
-is small and easy to hide. An order that is 10% is large, and the market will
-notice you.
+THE WORDS
+"% of a day's volume" is how big your order is next to what that share
+normally trades in a whole day. An order that is 1% of a day is small and easy
+to hide. An order that is 10% is large, and the market will notice you.
 
-The smaller chart splits the same money by company size instead - the largest
-companies are usually the easiest to trade because so much changes hands.
+The smaller chart splits the same money by company size instead. The largest
+companies are usually the easiest to trade.
 
 HOW TO READ IT
-Normally you expect big orders to do worse. You are asking the market to
+You would normally expect big orders to do worse. You are asking the market to
 absorb more, so the price moves against you.
 
 WHY IT MATTERS
-If your small, easy orders do worse than your large, hard ones, that is
-backwards - and it usually means the easy flow is being pushed through faster
-than it needs to be. Easy flow is normally most of your money, so it is worth
+If your small, easy orders do worse than your large, hard ones, something is
+backwards. It usually means the easy flow is being pushed through faster than
+it needs to be. Easy flow is normally most of your money, so it is worth
 getting right.
 
-Groups with very few orders are ignored in the commentary. A handful of trades
-can produce an impressive number purely by luck.""")
+Bands with very few orders are flagged. A handful of trades can produce an
+impressive number purely by luck.""")
     footer(s)
 
 
 def s_venue(prs, ctx, nar):
     s = new_slide(prs)
     hl = ctx["headline"]
-    title(s, "Where Your Volume Executes")
+    title(s, "How Each Algo Trades")
     dark = hl.get("dark_share", np.nan)
-    strapline(s, (f"{dark:.0f}% of volume trades in dark."
+    strapline(s, (f"{dark:.0f}% of your volume trades at the midpoint."
                   if np.isfinite(dark) and dark >= 5
-                  else "Auction, passive posting, or crossing the spread."))
+                  else "Auction, resting in the queue, or paying the spread."))
     picture(s, ctx["charts"].get("venue"), MARGIN, Inches(1.55),
             width=Inches(7.5))
     seg = VENUE_SEGMENTS_REPORT or {}
@@ -4301,45 +4540,46 @@ def s_venue(prs, ctx, nar):
     for a in [x for x in ALGO_ORDER if x in seg] or \
              [x for x in seg if x != "TOTAL"]:
         parts = []
-        for k, lbl in [("Auction", "auction"), ("Visible Post", "posted"),
-                       ("Visible Take", "crossing the spread"),
-                       ("Dark", "dark")]:
+        for k, lbl in [("Auction", "in the auction"),
+                       ("Visible Post", "resting in the queue"),
+                       ("Visible Take", "paying the spread"),
+                       ("Dark", "at the midpoint")]:
             v = seg[a].get(k, 0)
             if v >= 5:
                 parts.append(f"**{v:.0f}%** {lbl}")
         if parts:
             lines.append(f"**{a}** — " + ", ".join(parts) + ".")
-    lines += [r for r in nar["recs"] if "dark too" in r or "posting more" in r]
+    lines += pick(nar["recs"], "rec_algo_venue")
     bullets(s, lines, Inches(8.20), Inches(1.72), Inches(4.55), Inches(4.3),
             size=10.5)
-    note(s, "Venue split is taken from the published venue segment breakdown, "
-            "as a % of executed value.")
+    note(s, "Venue split comes from the published venue segment breakdown, "
+            "as a share of what you traded.")
     notes(s, """WHAT THIS SLIDE SHOWS
-The same four ways of trading as the market-by-market slide, but split by
-algorithm instead of by country.
+The same four ways of trading as the market slide, split by algo instead of by
+country.
 
 A REMINDER OF THE FOUR
-Auction - the big batch trade at the open or close.
-Posted - you wait and let others come to you, and you earn the spread.
-Crossing the spread - you take what is on offer now, and you pay the spread.
-Dark - a private venue at the midpoint, where you neither pay nor earn it.
+Auction. The batch trade at the open or the close.
+Resting in the queue. You wait, others come to you, and you earn the spread.
+Paying the spread. You take what is on offer now, and you give the spread up.
+Midpoint. A private venue in the middle, where you neither pay nor earn it.
 
 HOW TO READ IT
-Each bar is 100% of what that algorithm traded.
+Each bar is 100% of what that algo traded.
 
 WHY IT MATTERS
-It shows whether each algorithm is using all the tools available to it. An
-algorithm that only ever crosses the spread is leaving the cheapest options
-untouched - and that is usually a settings choice rather than a limitation.""")
+It shows whether each algo is using all the tools it has. An algo that only
+ever pays the spread is leaving the cheap options untouched. That is normally
+a setting, not a limit.""")
     footer(s)
 
 
 def s_advice(prs, ctx, nar):
     s = new_slide(prs)
-    title(s, "What We Would Change")
-    strapline(s, "Biggest win first.")
-    for i, r in enumerate(nar["recs"][:4]):
-        y = Inches(1.62 + i * 1.06)
+    title(s, "What To Change")
+    strapline(s, "Biggest money first.")
+    for i, r in enumerate(texts(nar["recs"])[:4]):
+        y = Inches(1.55 + i * 1.05)
         num = s.shapes.add_shape(1, MARGIN, y, Inches(0.44), Inches(0.44))
         num.fill.solid(); num.fill.fore_color.rgb = T_HEAD
         num.line.fill.background(); num.shadow.inherit = False
@@ -4347,35 +4587,31 @@ def s_advice(prs, ctx, nar):
         tf.paragraphs[0].alignment = PP_ALIGN.CENTER
         _run(tf.paragraphs[0], str(i + 1), size=15, bold=True, color=T_WHITE)
         bullets(s, [r], Inches(1.22), y - Inches(0.05), Inches(11.4),
-                Inches(0.95), size=12, marker="")
+                Inches(1.0), size=11.5, marker="")
 
     if nar["notes"]:
-        box = s.shapes.add_textbox(MARGIN, Inches(5.95), Inches(12.1),
+        box = s.shapes.add_textbox(MARGIN, Inches(5.82), Inches(12.1),
                                    Inches(0.3))
         _run(box.text_frame.paragraphs[0], "WORTH KNOWING", size=10, bold=True,
              color=T_MUTED)
-        bullets(s, ["~" + x for x in nar["notes"][:3]], MARGIN, Inches(6.25),
-                Inches(12.1), Inches(0.8), size=9, gap=2)
+        bullets(s, ["~" + x for x in texts(nar["notes"])[:3]], MARGIN,
+                Inches(6.10), Inches(12.1), Inches(0.85), size=9, gap=3)
     notes(s, """WHAT THIS SLIDE SHOWS
-What we would actually change, in order of how much it is worth.
+What we would change, in order of how much money is at stake.
 
 HOW TO READ IT
-Each item names a specific change and roughly what it is worth in money. They
-are ordered by size, so number 1 is where to start.
+Each item names a change and roughly what it is worth. Start with number one.
 
-We have deliberately avoided "look into X". Everything here is something that
-can be acted on.
+We have avoided "look into X". Everything here can be acted on.
 
-THE SMALL PRINT AT THE BOTTOM
-"Worth knowing" lists the things that could change these conclusions. It is
-short on purpose - please read it before acting on anything above. In
-particular, where a number could have an innocent explanation, we say so rather
-than presenting it as settled.
+THE SMALL PRINT
+"Worth knowing" lists the things that could change these conclusions. Please
+read it before acting. Where a number has an innocent explanation, we say so
+rather than presenting it as settled.
 
 WHAT WE WOULD DO NEXT
-Run the same analysis on the next period and see whether the number moved. The
-comparison that matters is against your own result on the same kind of flow,
-not against anyone else.""")
+Run the same analysis next period and see whether the number moved. The
+comparison that counts is against your own result on the same kind of flow.""")
     footer(s)
 
 
@@ -4384,7 +4620,6 @@ def build_simple_deck(ctx: dict, nar: dict, out: Path) -> Path:
     prs = Presentation()
     prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
     s_cover(prs, ctx)
-    s_summary(prs, ctx, nar)
     s_algo(prs, ctx)
     s_market(prs, ctx, nar)
     s_industry(prs, ctx, nar)
@@ -4393,6 +4628,7 @@ def build_simple_deck(ctx: dict, nar: dict, out: Path) -> Path:
     s_venue_country(prs, ctx, nar)
     s_size(prs, ctx, nar)
     s_venue(prs, ctx, nar)
+    s_summary(prs, ctx, nar)
     s_advice(prs, ctx, nar)
     prs.save(str(out))
     log(f"  saved {out.name}  ({len(prs.slides._sldIdLst)} slides)")
@@ -4639,6 +4875,7 @@ def probe(path: Path) -> int:
 def main(argv=None) -> int:
     global HEADER_ROW, SHEET, CLIENT_NAME, CLIENT_CODE, PERIOD_LABEL
     global ALGOS_STUDIED, DARK_STORY, DARK_MARKETS, VENUE_SEGMENTS_REPORT
+    global EXCLUDE_MARKETS
     global INDUSTRY_REPORT, ALGO_REPORT, REPORT, REFERENCE, ALGO_ORDER
     ap = argparse.ArgumentParser(
         description="Build the client TCA deck from the order export.",
@@ -4686,6 +4923,7 @@ def main(argv=None) -> int:
     ALGO_ORDER      = cfg["algo_order"]
     DARK_STORY      = cfg["dark_story"]
     DARK_MARKETS    = cfg["dark_markets"]
+    EXCLUDE_MARKETS = list(cfg.get("exclude_markets") or [])
     VENUE_SEGMENTS_REPORT = cfg["venue_segments"]
     INDUSTRY_REPORT = cfg["industry"]
     ALGO_REPORT     = cfg.get("algo_report")
@@ -4755,6 +4993,16 @@ def main(argv=None) -> int:
     if args.sample:
         log("")
         log("  (reference check skipped - synthetic data will not reconcile)")
+
+    if EXCLUDE_MARKETS and "market" in df:
+        out_ = df["market"].isin(EXCLUDE_MARKETS)
+        if out_.any():
+            log("")
+            n_ord = int(out_.sum())
+            log(f"  excluded from the review: {_and(EXCLUDE_MARKETS)} - "
+                f"{n_ord:,} order{'' if n_ord == 1 else 's'}, "
+                f"{f_money(df.loc[out_, 'notional'].sum())}")
+            df = df[~out_].copy()
 
     if ALGOS_STUDIED:
         keep = df["algo"].isin(ALGOS_STUDIED)
