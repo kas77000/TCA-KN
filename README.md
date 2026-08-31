@@ -39,8 +39,12 @@ Otherwise the venue mix leads, because that is what decides the fix — which is
 what happens for KIC, where India crossing the spread on 100% of its volume is
 the actionable finding.
 
-Output: `<client>/output/<CLIENT>_TCA_short.pptx`. `--slides 5` adds a slide on
-algorithm and order size.
+Output: **`<client>/output/<CLIENT>_TCA_short.pptx`** — note the `_short`
+suffix; `tca_deck.py` writes `<CLIENT>_TCA.pptx` into the same folder, so check
+which one you are opening. `--slides 5` adds a slide on algorithm and order size.
+
+`tca_deck_v2.py` only ever builds the short pack. `--simple` is accepted so a
+command line copied from `tca_deck.py` still runs, but it changes nothing.
 
 Everything else — data, analysis, wording, speaker notes — is identical to
 `tca_deck.py`. Only the slide selection differs.

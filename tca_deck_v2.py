@@ -5235,12 +5235,9 @@ def main(argv=None) -> int:
                     help="output directory (default: <client>/output)")
     ap.add_argument("--probe", action="store_true",
                     help="inspect the data file and stop - no charts, no deck")
-    ap.add_argument("--simple", action="store_true",
-                    help="client deck from the published report figures only - "
-                         "no order file needed")
-    ap.add_argument("--short", action="store_true",
-                    help="the four-slide version of --simple, for a short "
-                         "meeting")
+    # kept only so a command line copied from tca_deck.py still runs
+    ap.add_argument("--simple", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--short", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--slides", type=int, default=4, choices=[4, 5],
                     help="how many slides --short should produce (default 4)")
     ap.add_argument("--sample", action="store_true",
@@ -5292,13 +5289,17 @@ def main(argv=None) -> int:
         log("-" * 74)
         log("DECK")
         log("-" * 74)
-        if not args.simple:          # short is v2's default
-            log(f"  lead exhibit: {pick_lead_exhibit(ctx)}")
-            build_short_deck(ctx, nar,
-                             out / f"{CLIENT_NAME}_TCA_short.pptx",
-                             n_slides=args.slides)
-        else:
-            build_simple_deck(ctx, nar, out / f"{CLIENT_NAME}_TCA.pptx")
+        # This script only ever builds the short pack. --simple and --short
+        # are accepted so a v1 command line still runs, but neither changes
+        # what comes out; use tca_deck.py for the long version.
+        if args.simple:
+            log("  note: --simple has no effect here. tca_deck_v2.py always "
+                "builds the short pack;")
+            log("        run tca_deck.py --simple for the long one.")
+        log(f"  lead exhibit: {pick_lead_exhibit(ctx)}")
+        deck = build_short_deck(ctx, nar,
+                                out / f"{CLIENT_NAME}_TCA_short.pptx",
+                                n_slides=args.slides)
         write_tables({"headline": pd.DataFrame([ctx["headline"]]).T
                       .rename(columns={0: "value"}),
                       "by_algo": ctx["algo_table"],
@@ -5315,9 +5316,11 @@ def main(argv=None) -> int:
                      out / "tables.xlsx")
         (out / "run_log.txt").write_text("\n".join(LOG), encoding="utf-8")
         log("")
-        log("Done. Everything is in " + str(out.resolve()))
-        log("  Every figure comes from the published report - no order file "
-            "was read.")
+        log("Done. Open this file:")
+        log("  " + str(deck.resolve()))
+        log("")
+        log(f"  {args.slides} slides. Every figure comes from the published "
+            "report - no order file was read.")
         return 0
 
     if args.sample:
