@@ -18,6 +18,33 @@ Output lands in `<client>/output`:
 | `dark_regression.txt` | full regression output (KIC only) |
 | `run_log.txt` | sanity report + reference check |
 
+## The short deck (4 slides)
+
+```bash
+python tca_deck_v2.py --client KIC
+python tca_deck_v2.py --client NPS --slides 5
+```
+
+`tca_deck_v2.py` is the four-slide version for a short meeting:
+
+1. **The number, and what we see** — cover and summary merged
+2. **Where the money is made and lost** — by country
+3. **What explains it** — chosen from the data, see below
+4. **What we would change**
+
+Slide 3 is not fixed. If one country-and-side cell is worth more than half the
+whole result, that cell *is* the story and the buy/sell chart leads — which is
+what happens for NPS, where Japan buys alone exceed the entire shortfall.
+Otherwise the venue mix leads, because that is what decides the fix — which is
+what happens for KIC, where India crossing the spread on 100% of its volume is
+the actionable finding.
+
+Output: `<client>/output/<CLIENT>_TCA_short.pptx`. `--slides 5` adds a slide on
+algorithm and order size.
+
+Everything else — data, analysis, wording, speaker notes — is identical to
+`tca_deck.py`. Only the slide selection differs.
+
 ## The client deck
 
 ```bash
